@@ -175,9 +175,9 @@ season,game_number,slug,event_id,event_numeric_id,game_date_guess,away_team_id_r
 2026,14,2026-ev-14,2026_game_14,481,2026-06-06 00:30:00+00:00,RED,Redwoods,ATL,Atlas,RED,Redwoods,ATL,Atlas,12,11,3,3,final,event_list_endpoint,event_list_endpoint
 2026,15,2026-ev-15,2026_game_15,482,2026-06-06 21:30:00+00:00,OUT,Outlaws,CHA,Chaos,OUT,Outlaws,CHA,Chaos,11,12,3,3,final,event_list_endpoint,event_list_endpoint
 2026,16,2026-ev-16,2026_game_16,483,2026-06-07 00:00:00+00:00,CAN,Cannons,WAT,Waterdogs,CAN,Cannons,WAT,Waterdogs,10,17,3,3,final,event_list_endpoint,event_list_endpoint
-2026,17,2026-ev-17,2026_game_17,484,2026-06-19 22:00:00+00:00,CAN,Cannons,ATL,Atlas,CAN,Cannons,ATL,Atlas,0,0,0,0,scheduled,event_list_endpoint,event_list_endpoint
-2026,18,2026-ev-18,2026_game_18,486,2026-06-20 00:30:00+00:00,ARC,Archers,RED,Redwoods,ARC,Archers,RED,Redwoods,0,0,0,0,scheduled,event_list_endpoint,event_list_endpoint
-2026,19,2026-ev-19,2026_game_19,487,2026-06-21 01:00:00+00:00,WHP,Whipsnakes,ATL,Atlas,WHP,Whipsnakes,ATL,Atlas,0,0,0,0,scheduled,event_list_endpoint,event_list_endpoint
+2026,17,2026-ev-17,2026_game_17,484,2026-06-19 22:00:00+00:00,CAN,Cannons,ATL,Atlas,CAN,Cannons,ATL,Atlas,11,12,3,3,final,event_list_endpoint,event_list_endpoint
+2026,18,2026-ev-18,2026_game_18,486,2026-06-20 00:30:00+00:00,ARC,Archers,RED,Redwoods,ARC,Archers,RED,Redwoods,14,16,3,3,final,event_list_endpoint,event_list_endpoint
+2026,19,2026-ev-19,2026_game_19,487,2026-06-21 01:00:00+00:00,WHP,Whipsnakes,ATL,Atlas,WHP,Whipsnakes,ATL,Atlas,14,16,3,3,final,event_list_endpoint,event_list_endpoint
 2026,20,2026-ev-21,2026_game_21,489,2026-06-27 20:00:00+00:00,WHP,Whipsnakes,OUT,Outlaws,WHP,Whipsnakes,OUT,Outlaws,0,0,0,0,scheduled,event_list_endpoint,event_list_endpoint
 2026,21,2026-ev-22,2026_game_22,490,2026-06-28 00:30:00+00:00,CAN,Cannons,RED,Redwoods,CAN,Cannons,RED,Redwoods,0,0,0,0,scheduled,event_list_endpoint,event_list_endpoint
 2026,22,2026-ev-23,2026_game_23,492,2026-06-28 20:00:00+00:00,WAT,Waterdogs,ARC,Archers,WAT,Waterdogs,ARC,Archers,0,0,0,0,scheduled,event_list_endpoint,event_list_endpoint
