@@ -3692,7 +3692,7 @@ def _rank_pct(series, higher_is_better=True):
     s = pd.to_numeric(series, errors="coerce")
     if s.notna().sum() == 0:
         return pd.Series(np.nan, index=series.index)
-    return s.rank(pct=True, ascending=not higher_is_better, na_option="keep") * 100
+    return s.rank(pct=True, ascending=not higher_is_better, method="average", na_option="keep") * 100
 
 
 def _minmax_score(series, higher_is_better=True):
@@ -3728,23 +3728,81 @@ def _z_to_score(z):
 
 
 def _value_tier_from_z(z):
+    """
+    Legacy fallback tiering by peer-separation z-score only.
+
+    The official role tier below uses a fuller role-context profile. This
+    fallback remains for safety if a row-level tier cannot be calculated.
+    """
     try:
         z = float(z)
     except Exception:
         return "Unrated"
     if pd.isna(z):
         return "Unrated"
-    if z >= 2.0:
-        return "Elite Separator"
-    if z >= 1.25:
-        return "High-End Separator"
-    if z >= 0.50:
-        return "Above-Average"
-    if z >= -0.50:
-        return "Average Range"
-    if z >= -1.25:
-        return "Below-Average"
-    return "Low-End"
+    if z >= 1.75:
+        return "Outlier Elite"
+    if z >= 0.95:
+        return "Elite"
+    if z >= 0.45:
+        return "High-End"
+    if z >= -0.35:
+        return "Average / Starter"
+    if z >= -1.00:
+        return "Below Average"
+    return "Low Impact"
+
+
+def _official_role_value_tier(row):
+    """
+    Assign the final role tier using the same language used by the Streamlit
+    page. This avoids the previous issue where tiers were driven only by
+    adjusted z-score, which made it too hard for anyone to be labeled Elite
+    in small contexts.
+
+    The tier now considers:
+      - role_context_value_score: blended role value;
+      - role_primary_percentile: rank within role peers;
+      - role_adjusted_z: actual separation from role peers.
+    """
+    try:
+        score = float(row.get("role_context_value_score", np.nan))
+    except Exception:
+        score = np.nan
+
+    try:
+        pct = float(row.get("role_primary_percentile", np.nan))
+    except Exception:
+        pct = np.nan
+
+    try:
+        z = float(row.get("role_adjusted_z", np.nan))
+    except Exception:
+        z = np.nan
+
+    if pd.isna(score):
+        return _value_tier_from_z(z)
+
+    # Truly elite separator: great blended role score plus either top percentile
+    # or clear peer separation.
+    if score >= 90 or (score >= 84 and pct >= 95 and z >= 0.85):
+        return "Outlier Elite"
+
+    # Elite role value: top role performers without requiring extreme z-scores
+    # during small-sample season contexts.
+    if score >= 78 and (pd.isna(pct) or pct >= 80):
+        return "Elite"
+
+    if score >= 65 or (not pd.isna(pct) and pct >= 70) or (not pd.isna(z) and z >= 0.45):
+        return "High-End"
+
+    if score >= 48:
+        return "Average / Starter"
+
+    if score >= 34:
+        return "Below Average"
+
+    return "Low Impact"
 
 
 def _label_from_score(score, labels):
@@ -3786,121 +3844,476 @@ def _ranking_context_min_games(context_type, max_games):
     return 3
 
 
-def _add_player_ranking_scores(df):
-    out = df.copy()
 
-    needed = [
-        "points_per_game", "scoring_points_per_game", "one_point_goals_per_game",
-        "two_point_goals_per_game", "goals_per_game", "assists_per_game",
-        "shots_per_game", "ground_balls_per_game", "turnovers_per_game",
-        "caused_turnovers_per_game", "touches_per_game", "faceoff_pct_calc",
-        "faceoffs_per_game", "faceoffs_won_per_game", "saves_per_game",
-        "goals_against_per_game", "scores_against_per_game", "save_pct_calc",
-        "games"
-    ]
-    out = _ensure_cols(out, needed)
 
-    pos = out.get("position", pd.Series("", index=out.index)).astype(str).str.upper()
-    out["role_group"] = np.select(
-        [pos.eq("G"), pos.eq("FO"), pos.isin(["D", "LSM", "SSDM"])],
-        ["Goalie", "Faceoff", "Defense"],
-        default="Offense"
-    )
+def _score_metric(series, higher_is_better=True, percentile_weight=0.35):
+    """
+    Context-local score for a raw metric.
 
-    out["goal_value_score"] = (
-        0.40 * _minmax_score(out["scoring_points_per_game"], True).fillna(50)
-        + 0.20 * _minmax_score(out["one_point_goals_per_game"], True).fillna(50)
-        + 0.25 * _minmax_score(out["two_point_goals_per_game"], True).fillna(50)
-        + 0.15 * _minmax_score(out["goals_per_game"], True).fillna(50)
-    ).clip(0, 100)
+    This is intentionally closer to the Colab-tested ranking behavior than the
+    previous role-only scorer. The score is mostly min-max based, because the
+    tested leaderboard rewarded actual distance between players, with a smaller
+    percentile component to keep ordering stable in small samples.
 
-    out["offensive_score"] = (
-        0.32 * _minmax_score(out["points_per_game"], True).fillna(50)
-        + 0.22 * _minmax_score(out["scoring_points_per_game"], True).fillna(50)
-        + 0.18 * _minmax_score(out["assists_per_game"], True).fillna(50)
-        + 0.14 * _minmax_score(out["shots_per_game"], True).fillna(50)
-        + 0.14 * out["goal_value_score"].fillna(50)
-    ).clip(0, 100)
+    score = percentile_weight * percentile_score
+          + (1 - percentile_weight) * minmax_score
+    """
+    s = pd.to_numeric(series, errors="coerce")
 
-    out["usage_score"] = (
-        0.55 * _minmax_score(out["touches_per_game"], True).fillna(50)
-        + 0.25 * _minmax_score(out["shots_per_game"], True).fillna(50)
-        + 0.20 * _minmax_score(out["ground_balls_per_game"], True).fillna(50)
-    ).clip(0, 100)
+    if s.notna().sum() == 0:
+        return pd.Series(np.nan, index=s.index, dtype="float64")
 
-    out["defensive_score"] = (
-        0.45 * _minmax_score(out["caused_turnovers_per_game"], True).fillna(50)
-        + 0.35 * _minmax_score(out["ground_balls_per_game"], True).fillna(50)
-        + 0.20 * _minmax_score(out["turnovers_per_game"], False).fillna(50)
-    ).clip(0, 100)
+    pct = _rank_pct(s, higher_is_better=higher_is_better)
+    mm = _minmax_score(s, higher_is_better=higher_is_better)
 
-    out["faceoff_score"] = (
-        0.55 * _minmax_score(out["faceoff_pct_calc"], True).fillna(50)
-        + 0.25 * _minmax_score(out["faceoffs_won_per_game"], True).fillna(50)
-        + 0.20 * _minmax_score(out["ground_balls_per_game"], True).fillna(50)
-    ).clip(0, 100)
+    w_pct = float(percentile_weight)
+    w_pct = min(max(w_pct, 0.0), 1.0)
+    out = w_pct * pct.fillna(50) + (1.0 - w_pct) * mm.fillna(50)
 
-    out["goalie_score"] = (
-        0.50 * _minmax_score(out["save_pct_calc"], True).fillna(50)
-        + 0.25 * _minmax_score(out["saves_per_game"], True).fillna(50)
-        + 0.25 * _minmax_score(out["goals_against_per_game"], False).fillna(50)
-    ).clip(0, 100)
+    return out.clip(0, 100).where(s.notna(), np.nan)
 
-    out["role_primary_score"] = np.select(
-        [
-            out["role_group"].eq("Goalie"),
-            out["role_group"].eq("Faceoff"),
-            out["role_group"].eq("Defense"),
-            out["role_group"].eq("Offense"),
-        ],
-        [
-            out["goalie_score"],
-            out["faceoff_score"],
-            out["defensive_score"],
-            out["offensive_score"],
-        ],
-        default=out["offensive_score"]
-    )
+
+def _weighted_available_score(df, weights, fallback=np.nan):
+    """Weighted row score that ignores missing component columns/values."""
+    score = pd.Series(0.0, index=df.index, dtype="float64")
+    weight_sum = pd.Series(0.0, index=df.index, dtype="float64")
+
+    for col, weight in weights.items():
+        if isinstance(col, pd.Series):
+            vals = pd.to_numeric(col, errors="coerce")
+        elif col in df.columns:
+            vals = pd.to_numeric(df[col], errors="coerce")
+        else:
+            continue
+
+        valid = vals.notna()
+        if valid.any():
+            score.loc[valid] += vals.loc[valid] * float(weight)
+            weight_sum.loc[valid] += float(weight)
+
+    out = score / weight_sum.replace(0, np.nan)
+
+    if fallback is not None and not (isinstance(fallback, float) and pd.isna(fallback)):
+        out = out.fillna(float(fallback))
+
+    return out.clip(0, 100)
+
+
+def _role_metric_score(out, col, higher_is_better=True, role_col="role_group", percentile_weight=0.35):
+    """Score a metric inside role groups for secondary peer context."""
+    if col not in out.columns:
+        return pd.Series(np.nan, index=out.index, dtype="float64")
+
+    s = pd.to_numeric(out[col], errors="coerce")
+    result = pd.Series(np.nan, index=out.index, dtype="float64")
+
+    for _, idx in out.groupby(role_col, dropna=False).groups.items():
+        idx = list(idx)
+        result.loc[idx] = _score_metric(
+            s.loc[idx],
+            higher_is_better=higher_is_better,
+            percentile_weight=percentile_weight,
+        ).values
+
+    return result
+
+
+def _add_test_style_role_separation(out):
+    """
+    Add the role percentile and peer-separation fields using the same structure
+    as the final Colab testing app:
+
+    robust_scale = IQR / 1.349, with standard deviation fallback
+    role_reliability = min(role_group_size, 8) / 8
+    role_separation_score = 50 + role_reliability * ((50 + 12.5*z) - 50)
+    """
+    out = out.copy()
 
     out["role_primary_percentile"] = np.nan
     out["role_robust_z"] = np.nan
     out["role_adjusted_z"] = np.nan
     out["role_separation_score"] = np.nan
     out["role_group_size"] = np.nan
+    out["role_reliability"] = np.nan
 
     for _, idx in out.groupby("role_group", dropna=False).groups.items():
         idx = list(idx)
         role_scores = pd.to_numeric(out.loc[idx, "role_primary_score"], errors="coerce")
-        z = _robust_z(role_scores)
+        valid = role_scores.dropna()
+        n = int(valid.shape[0])
 
-        # Shrink peer-separation signal when group size is tiny.
-        n = len(idx)
-        shrink = min(1.0, np.sqrt(max(n, 1) / 8.0))
-        z_adj = z * shrink
-
-        out.loc[idx, "role_primary_percentile"] = _rank_pct(role_scores, True).values
-        out.loc[idx, "role_robust_z"] = z.values
-        out.loc[idx, "role_adjusted_z"] = z_adj.values
-        out.loc[idx, "role_separation_score"] = _z_to_score(z_adj).values
         out.loc[idx, "role_group_size"] = n
 
-    out["role_value_tier"] = out["role_adjusted_z"].apply(_value_tier_from_z)
+        if n == 0:
+            out.loc[idx, "role_primary_percentile"] = np.nan
+            out.loc[idx, "role_robust_z"] = 0.0
+            out.loc[idx, "role_adjusted_z"] = 0.0
+            out.loc[idx, "role_separation_score"] = 50.0
+            out.loc[idx, "role_reliability"] = 0.0
+            continue
 
-    out["role_context_value_score"] = (
-        0.50 * pd.to_numeric(out["role_primary_score"], errors="coerce").fillna(50)
-        + 0.25 * pd.to_numeric(out["role_primary_percentile"], errors="coerce").fillna(50)
-        + 0.25 * pd.to_numeric(out["role_separation_score"], errors="coerce").fillna(50)
+        percentile = _rank_pct(role_scores, True)
+
+        median = valid.median()
+        q1 = valid.quantile(0.25)
+        q3 = valid.quantile(0.75)
+        iqr = q3 - q1
+        robust_scale = iqr / 1.349 if pd.notna(iqr) and iqr > 0 else np.nan
+        std_scale = valid.std(ddof=0)
+
+        if pd.notna(robust_scale) and robust_scale > 1e-9:
+            scale = robust_scale
+        elif pd.notna(std_scale) and std_scale > 1e-9:
+            scale = std_scale
+        else:
+            scale = np.nan
+
+        if pd.isna(scale):
+            z = pd.Series(0.0, index=role_scores.index, dtype="float64")
+        else:
+            z = ((role_scores - median) / scale).clip(-4, 4).fillna(0.0)
+
+        reliability = min(n, 8) / 8.0
+        raw_sep = (50.0 + 12.5 * z).clip(0, 100)
+        sep = (50.0 + reliability * (raw_sep - 50.0)).clip(0, 100)
+
+        out.loc[idx, "role_primary_percentile"] = percentile.values
+        out.loc[idx, "role_robust_z"] = z.values
+        out.loc[idx, "role_adjusted_z"] = (z * reliability).values
+        out.loc[idx, "role_separation_score"] = sep.values
+        out.loc[idx, "role_reliability"] = reliability * 100.0
+
+    out["role_value_tier"] = out.apply(_official_role_value_tier, axis=1)
+    return out
+
+
+def _add_player_ranking_scores(df):
+    """
+    Build the official player ranking mart using the final architecture but
+    closer to the Colab-tested math:
+
+    - warehouse calculates rankings once;
+    - app only displays rankings;
+    - no experimental version labels;
+    - component scores are context-local and mostly min-max based like the
+      tested scoring scale;
+    - usage blends global usage with role-peer usage so offensive players are
+      not crushed and specialists are not artificially boosted;
+    - role context uses role score + role percentile + IQR-based peer separation;
+    - scoring_value_score captures direct scoring value;
+    - playmaking_value_score captures assist/creation value;
+    - overall_score is the final official displayed rating.
+    """
+    out = df.copy()
+
+    needed = [
+        "points_per_game", "scoring_points_per_game", "one_point_goals_per_game",
+        "two_point_goals_per_game", "goals_per_game", "assists_per_game",
+        "shots_per_game", "shots_on_goal_per_game", "shot_pct_calc",
+        "ground_balls_per_game", "turnovers_per_game", "caused_turnovers_per_game",
+        "touches_per_game", "total_passes_per_game", "faceoff_pct_calc",
+        "faceoffs_per_game", "faceoffs_won_per_game", "faceoffs_lost_per_game",
+        "saves_per_game", "goals_against_per_game", "scores_against_per_game",
+        "save_pct_calc", "two_point_shots", "two_point_goals", "games",
+    ]
+    out = _ensure_cols(out, needed)
+
+    pos = out.get("position", pd.Series("", index=out.index)).astype(str).str.upper().str.strip()
+    out["role_group"] = np.select(
+        [pos.eq("G"), pos.isin(["FO", "FOS"]), pos.isin(["D", "LSM", "SSDM"])],
+        ["Goalie", "Faceoff", "Defense"],
+        default="Offense",
+    )
+
+    # ------------------------------------------------------------------
+    # Derived ratios retained from the tested mart contract.
+    # ------------------------------------------------------------------
+    touches_pg = pd.to_numeric(out["touches_per_game"], errors="coerce")
+    shots_pg = pd.to_numeric(out["shots_per_game"], errors="coerce")
+
+    out["points_per_touch"] = np.where(
+        touches_pg > 0,
+        pd.to_numeric(out["points_per_game"], errors="coerce") / touches_pg,
+        np.nan,
+    )
+    out["assists_per_touch"] = np.where(
+        touches_pg > 0,
+        pd.to_numeric(out["assists_per_game"], errors="coerce") / touches_pg,
+        np.nan,
+    )
+    out["turnovers_per_touch"] = np.where(
+        touches_pg > 0,
+        pd.to_numeric(out["turnovers_per_game"], errors="coerce") / touches_pg,
+        np.nan,
+    )
+    out["goals_per_shot"] = np.where(
+        shots_pg > 0,
+        pd.to_numeric(out["goals_per_game"], errors="coerce") / shots_pg,
+        np.nan,
+    )
+    out["sog_rate_for_ranking"] = np.where(
+        shots_pg > 0,
+        pd.to_numeric(out["shots_on_goal_per_game"], errors="coerce") / shots_pg,
+        np.nan,
+    )
+    out["faceoff_pct_for_ranking"] = pd.to_numeric(out["faceoff_pct_calc"], errors="coerce")
+    out["save_pct_for_ranking"] = pd.to_numeric(out["save_pct_calc"], errors="coerce")
+
+    out["two_point_goal_pct_calc"] = (
+        pd.to_numeric(out["two_point_goals"], errors="coerce")
+        / pd.to_numeric(out["two_point_shots"], errors="coerce").replace(0, np.nan)
+    )
+
+    # ------------------------------------------------------------------
+    # Context-global component scores. These are closest to the original
+    # tested score scale because every player in the selected context is scored
+    # against the same context distribution.
+    # ------------------------------------------------------------------
+    out["points_score"] = _score_metric(out["points_per_game"], True)
+    out["scoring_points_score"] = _score_metric(out["scoring_points_per_game"], True)
+    out["one_point_goal_score"] = _score_metric(out["one_point_goals_per_game"], True)
+    out["two_point_goal_score"] = _score_metric(out["two_point_goals_per_game"], True)
+    out["goals_score"] = _score_metric(out["goals_per_game"], True)
+    out["assists_score"] = _score_metric(out["assists_per_game"], True)
+    out["shots_score"] = _score_metric(out["shots_per_game"], True)
+    out["sog_score"] = _score_metric(out["shots_on_goal_per_game"], True)
+    out["shot_pct_score"] = _score_metric(out["shot_pct_calc"], True)
+    out["touches_score_global"] = _score_metric(out["touches_per_game"], True)
+    out["passes_score_global"] = _score_metric(out["total_passes_per_game"], True)
+    out["ground_ball_score_global"] = _score_metric(out["ground_balls_per_game"], True)
+    out["ct_score"] = _score_metric(out["caused_turnovers_per_game"], True)
+    out["turnover_security_score"] = _score_metric(out["turnovers_per_touch"], False)
+    out["faceoff_pct_score"] = _score_metric(out["faceoff_pct_for_ranking"], True)
+    out["faceoff_volume_score"] = _score_metric(out["faceoffs_per_game"], True)
+    out["faceoff_wins_score"] = _score_metric(out["faceoffs_won_per_game"], True)
+    out["save_pct_score"] = _score_metric(out["save_pct_for_ranking"], True)
+    out["saves_score"] = _score_metric(out["saves_per_game"], True)
+    out["goals_against_score"] = _score_metric(out["goals_against_per_game"], False)
+    out["scores_against_score"] = _score_metric(out["scores_against_per_game"], False)
+    out["two_point_goal_efficiency_score"] = _score_metric(out["two_point_goal_pct_calc"], True)
+    out["points_per_touch_score"] = _score_metric(out["points_per_touch"], True)
+    out["assists_per_touch_score"] = _score_metric(out["assists_per_touch"], True)
+
+    # Secondary role-peer usage scores. These are blended into usage only; they
+    # do not replace the global usage baseline that matched testing better.
+    out["touches_score_role"] = _role_metric_score(out, "touches_per_game", True)
+    out["shots_score_role"] = _role_metric_score(out, "shots_per_game", True)
+    out["passes_score_role"] = _role_metric_score(out, "total_passes_per_game", True)
+    out["ground_ball_score_role"] = _role_metric_score(out, "ground_balls_per_game", True)
+    out["sog_score_role"] = _role_metric_score(out, "shots_on_goal_per_game", True)
+
+    # Public helper scores used by the app table.
+    out["touches_score"] = 0.70 * out["touches_score_global"].fillna(50) + 0.30 * out["touches_score_role"].fillna(50)
+    out["passes_score"] = 0.70 * out["passes_score_global"].fillna(50) + 0.30 * out["passes_score_role"].fillna(50)
+    out["ground_ball_score"] = 0.70 * out["ground_ball_score_global"].fillna(50) + 0.30 * out["ground_ball_score_role"].fillna(50)
+
+    # ------------------------------------------------------------------
+    # Component scores.
+    # ------------------------------------------------------------------
+    # Scoring Value is the renamed and expanded version of the older Goal
+    # Value concept. It rewards direct scoring impact: scoring points, total
+    # points, 1PT goals, 2PT goals, and 2PT scoring efficiency.
+    out["scoring_value_score"] = _weighted_available_score(out, {
+        "scoring_points_score": 0.34,
+        "points_score": 0.22,
+        "one_point_goal_score": 0.14,
+        "two_point_goal_score": 0.22,
+        "two_point_goal_efficiency_score": 0.08,
+    }, fallback=50)
+
+    # Legacy alias retained for older downstream checks/audits, but the app
+    # should label this as Scoring Value.
+    out["goal_value_score"] = out["scoring_value_score"]
+
+    # Playmaking Value rewards offensive creation that is not captured by pure
+    # scoring volume. This is meant to correctly value creator-heavy attackmen
+    # and midfielders such as high-assist, high-efficiency initiators.
+    out["playmaking_value_score"] = _weighted_available_score(out, {
+        "assists_score": 0.45,
+        "assists_per_touch_score": 0.20,
+        "points_per_touch_score": 0.20,
+        "passes_score_global": 0.10,
+        "turnover_security_score": 0.05,
+    }, fallback=50)
+
+    # Internal offensive creation blend used in the offense formula. It is kept
+    # in the warehouse for audit/debugging but should not be displayed as a
+    # primary table column because Scoring Value and Playmaking Value are clearer.
+    out["offensive_creation_score"] = (
+        0.60 * pd.to_numeric(out["scoring_value_score"], errors="coerce").fillna(50)
+        + 0.40 * pd.to_numeric(out["playmaking_value_score"], errors="coerce").fillna(50)
     ).clip(0, 100)
 
-    out["base_impact_score"] = (
-        0.42 * out["offensive_score"].fillna(50)
-        + 0.18 * out["usage_score"].fillna(50)
-        + 0.16 * out["defensive_score"].fillna(50)
-        + 0.12 * out["faceoff_score"].fillna(50)
-        + 0.12 * out["goalie_score"].fillna(50)
-    ).clip(0, 100)
+    out["offensive_score"] = _weighted_available_score(out, {
+        "points_score": 0.30,
+        "scoring_value_score": 0.22,
+        "playmaking_value_score": 0.22,
+        "goals_score": 0.12,
+        "shots_score": 0.08,
+        "shot_pct_score": 0.06,
+    }, fallback=50)
+    out["offensive_score_raw"] = out["offensive_score"]
 
-    out["v22_overall_score"] = np.select(
+    usage_global_score = _weighted_available_score(out, {
+        "touches_score_global": 0.45,
+        "shots_score": 0.20,
+        "passes_score_global": 0.15,
+        "ground_ball_score_global": 0.10,
+        "sog_score": 0.10,
+    }, fallback=50)
+
+    usage_role_score = _weighted_available_score(out, {
+        "touches_score_role": 0.45,
+        "shots_score_role": 0.20,
+        "passes_score_role": 0.15,
+        "ground_ball_score_role": 0.10,
+        "sog_score_role": 0.10,
+    }, fallback=50)
+
+    out["usage_global_score"] = usage_global_score
+    out["usage_role_score"] = usage_role_score
+    out["usage_possession_score"] = (0.70 * usage_global_score.fillna(50) + 0.30 * usage_role_score.fillna(50)).clip(0, 100)
+    out["usage_score"] = out["usage_possession_score"]
+
+    # Defensive score: caused turnovers are the most direct defensive-impact
+    # event available in the PLL box data, so this version leans more heavily
+    # into CT creation instead of letting ground balls dominate defender value.
+    out["defensive_score"] = _weighted_available_score(out, {
+        "ct_score": 0.58,
+        "ground_ball_score": 0.24,
+        "turnover_security_score": 0.10,
+        "touches_score": 0.08,
+    }, fallback=50)
+    out["defensive_score_raw"] = out["defensive_score"]
+
+    out["faceoff_score"] = _weighted_available_score(out, {
+        "faceoff_pct_score": 0.52,
+        "faceoff_wins_score": 0.24,
+        "faceoff_volume_score": 0.08,
+        "ground_ball_score": 0.16,
+    }, fallback=50)
+    out["faceoff_score_raw"] = out["faceoff_score"]
+
+    out["goalie_score"] = _weighted_available_score(out, {
+        "save_pct_score": 0.56,
+        "saves_score": 0.24,
+        "goals_against_score": 0.12,
+        "scores_against_score": 0.08,
+    }, fallback=50)
+    out["goalie_score_raw"] = out["goalie_score"]
+
+    # ------------------------------------------------------------------
+    # Role context = role score + role percentile + peer separation.
+    # ------------------------------------------------------------------
+    role_primary_map = {
+        "Offense": "offensive_score",
+        "Defense": "defensive_score",
+        "Faceoff": "faceoff_score",
+        "Goalie": "goalie_score",
+    }
+
+    out["role_primary_score"] = np.nan
+    for role_name, col in role_primary_map.items():
+        mask = out["role_group"].eq(role_name)
+        out.loc[mask, "role_primary_score"] = pd.to_numeric(out.loc[mask, col], errors="coerce")
+
+    out = _add_test_style_role_separation(out)
+
+    out["role_context_value_score"] = _weighted_available_score(out, {
+        "role_primary_score": 0.50,
+        "role_primary_percentile": 0.25,
+        "role_separation_score": 0.25,
+    }, fallback=50)
+    out["role_context_percentile"] = out["role_primary_percentile"]
+
+    # ------------------------------------------------------------------
+    # Base impact signal.
+    #
+    # Important: this must be role-specific. A previous version blended every
+    # player across offense + defense + faceoff + goalie components, which
+    # dragged every player's base score down and made defenders/goalies/FOs look
+    # much worse overall. The base score below keeps players evaluated mostly by
+    # the skills that actually define their role while still adding small
+    # cross-role value for GBs, usage, and offensive contribution where relevant.
+    # ------------------------------------------------------------------
+    offense_base = _weighted_available_score(out, {
+        "offensive_score": 0.50,
+        "usage_possession_score": 0.20,
+        "scoring_value_score": 0.15,
+        "playmaking_value_score": 0.15,
+    }, fallback=50)
+
+    defense_base = _weighted_available_score(out, {
+        "defensive_score": 0.68,
+        "ct_score": 0.10,
+        "ground_ball_score": 0.10,
+        "usage_possession_score": 0.08,
+        "offensive_score": 0.04,
+    }, fallback=50)
+
+    faceoff_base = _weighted_available_score(out, {
+        "faceoff_score": 0.46,
+        "ground_ball_score": 0.26,
+        "usage_possession_score": 0.16,
+        "offensive_score": 0.12,
+    }, fallback=50)
+
+    # Goalie base impact stays goalie-specific, but uses a broader blend than
+    # pure goalie_score so the overall cross-position list does not become
+    # dominated by goalies who separate strongly inside a small goalie peer pool.
+    goalie_base = _weighted_available_score(out, {
+        "goalie_score": 0.58,
+        "save_pct_score": 0.22,
+        "saves_score": 0.12,
+        "goals_against_score": 0.05,
+        "scores_against_score": 0.03,
+    }, fallback=50)
+
+    out["base_impact_score"] = np.select(
+        [
+            out["role_group"].eq("Offense"),
+            out["role_group"].eq("Defense"),
+            out["role_group"].eq("Faceoff"),
+            out["role_group"].eq("Goalie"),
+        ],
+        [offense_base, defense_base, faceoff_base, goalie_base],
+        default=np.nan,
+    )
+    out["base_impact_score"] = pd.to_numeric(out["base_impact_score"], errors="coerce").clip(0, 100)
+
+    # Keep overall_impact_score as the base-impact alias for compatibility with
+    # the Colab test export. Do not overwrite it with the final overall score.
+    out["overall_impact_score"] = out["base_impact_score"]
+
+    # ------------------------------------------------------------------
+    # Official overall score.
+    #
+    # This keeps the tested role-specific architecture. Goalies use a
+    # transfer-adjusted version of their goalie-specific inputs for the all-player
+    # Overall view rather than a flat subtraction. This preserves objective goalie
+    # evaluation in the Goalie view while preventing a small goalie peer pool from
+    # transferring too aggressively into cross-position rankings.
+    # ------------------------------------------------------------------
+
+    def _transfer_toward_average(series, factor):
+        s = pd.to_numeric(series, errors="coerce")
+        return (50.0 + float(factor) * (s - 50.0)).clip(0, 100)
+
+    # Full goalie skill metrics remain available in goalie_score / role context.
+    # These transfer-adjusted fields are used only for the all-player Overall
+    # score calculation.
+    out["goalie_base_for_overall"] = out["base_impact_score"].copy()
+    out["goalie_role_context_for_overall"] = out["role_context_value_score"].copy()
+    out["goalie_save_pct_for_overall"] = out["save_pct_score"].copy()
+    out["goalie_saves_for_overall"] = out["saves_score"].copy()
+
+    goalie_mask = out["role_group"].eq("Goalie")
+    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "base_impact_score"], 0.74)
+    out.loc[goalie_mask, "goalie_role_context_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "role_context_value_score"], 0.50)
+    out.loc[goalie_mask, "goalie_save_pct_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "save_pct_score"], 0.70)
+    out.loc[goalie_mask, "goalie_saves_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "saves_score"], 0.70)
+
+    out["overall_score_raw"] = np.select(
         [
             out["role_group"].eq("Offense"),
             out["role_group"].eq("Defense"),
@@ -3908,19 +4321,55 @@ def _add_player_ranking_scores(df):
             out["role_group"].eq("Goalie"),
         ],
         [
-            0.62 * out["base_impact_score"] + 0.20 * out["role_context_value_score"] + 0.10 * out["usage_score"] + 0.08 * out["goal_value_score"],
-            0.60 * out["base_impact_score"] + 0.30 * out["role_context_value_score"] + 0.10 * out["usage_score"],
-            0.65 * out["base_impact_score"] + 0.25 * out["role_context_value_score"] + 0.10 * _minmax_score(out["ground_balls_per_game"], True).fillna(50),
-            0.62 * out["base_impact_score"] + 0.38 * out["role_context_value_score"],
+            0.60 * out["base_impact_score"] + 0.20 * out["role_context_value_score"] + 0.10 * out["usage_possession_score"] + 0.10 * out["offensive_creation_score"],
+            0.58 * out["base_impact_score"] + 0.34 * out["role_context_value_score"] + 0.08 * out["usage_possession_score"],
+            0.74 * out["base_impact_score"] + 0.14 * out["role_context_value_score"] + 0.07 * out["ground_ball_score"] + 0.05 * out["usage_possession_score"],
+            0.72 * out["goalie_base_for_overall"] + 0.12 * out["goalie_role_context_for_overall"] + 0.10 * out["goalie_save_pct_for_overall"] + 0.06 * out["goalie_saves_for_overall"],
         ],
-        default=out["base_impact_score"]
+        default=out["base_impact_score"],
     )
+    out["overall_score_raw"] = pd.to_numeric(out["overall_score_raw"], errors="coerce")
 
-    out["v22_overall_score"] = pd.to_numeric(out["v22_overall_score"], errors="coerce").clip(0, 100)
-    out["overall_score"] = out["v22_overall_score"]
-    out["overall_impact_score"] = out["v22_overall_score"]
-    out["usage_possession_score"] = out["usage_score"]
-    out["role_context_percentile"] = out["role_primary_percentile"]
+    # Small role-balance adjustment applied only to the Overall score. This keeps
+    # role-specific views untouched while nudging overall valuation toward the
+    # current scouting read: defenders deserve a little more credit for CT-driven
+    # impact. Goalies are handled through transfer-adjusted overall inputs above,
+    # not through a flat score subtraction.
+    out["role_overall_adjustment"] = 0.0
+    out.loc[out["role_group"].eq("Defense"), "role_overall_adjustment"] = 1.5
+    out["overall_score_raw"] = (out["overall_score_raw"] + out["role_overall_adjustment"]).clip(0, 100)
+
+    # Light context calibration: score formulas are built from many role-specific
+    # component scores, so the raw score scale can drift down in small/early
+    # contexts. This shifts the eligible context median toward 50 without
+    # changing ranking order within that context. It restores the tested 0-100
+    # interpretation where roughly average players sit near 50 and top players
+    # can reach the 80s/90s.
+    out["overall_score"] = out["overall_score_raw"].copy()
+    eligible_mask = pd.to_numeric(out.get("eligible_for_default_ranking", pd.Series(1, index=out.index)), errors="coerce").fillna(1).eq(1)
+    raw_eligible = pd.to_numeric(out.loc[eligible_mask, "overall_score_raw"], errors="coerce")
+    if raw_eligible.notna().sum() >= 5:
+        context_median = raw_eligible.median()
+        if pd.notna(context_median):
+            shift = float(np.clip(50.0 - context_median, -12.0, 12.0))
+            out["overall_score"] = (pd.to_numeric(out["overall_score_raw"], errors="coerce") + shift).clip(0, 100)
+            out["overall_score_context_shift"] = shift
+        else:
+            out["overall_score_context_shift"] = 0.0
+    else:
+        out["overall_score_context_shift"] = 0.0
+
+    out["overall_score"] = pd.to_numeric(out["overall_score"], errors="coerce").clip(0, 100)
+
+    out["official_overall_score"] = out["overall_score"]
+    out["ranking_formula_version"] = "official_player_ranking_test_aligned"
+
+    if "save_pct_calc" in out.columns:
+        out["save_pct"] = out["save_pct_calc"]
+    if "faceoff_pct_calc" in out.columns:
+        out["faceoff_pct"] = out["faceoff_pct_calc"]
+    if "shot_pct_calc" in out.columns:
+        out["shot_pct"] = out["shot_pct_calc"]
 
     return out
 
@@ -3933,7 +4382,9 @@ def _build_player_ranking_context(df, context_type, context_label, sort_order):
     if "games" not in out.columns:
         out["games"] = 0
 
-    max_games = int(pd.to_numeric(out["games"], errors="coerce").max()) if len(out) else 0
+    out["games"] = pd.to_numeric(out["games"], errors="coerce").fillna(0)
+
+    max_games = int(out["games"].max()) if len(out) else 0
     min_games = _ranking_context_min_games(context_type, max_games)
 
     out["ranking_context_type"] = context_type
@@ -3941,68 +4392,91 @@ def _build_player_ranking_context(df, context_type, context_label, sort_order):
     out["ranking_sort_order"] = sort_order
     out["ranking_context_sort"] = sort_order
     out["max_games_in_context"] = max_games
+    out["ranking_context_max_games"] = max_games
     out["default_min_games_used"] = min_games
-    out["is_ranking_eligible"] = (pd.to_numeric(out["games"], errors="coerce").fillna(0) >= min_games).astype(int)
-    out["sample_size_note"] = np.where(max_games <= 2, "Early-season sample.", "")
+    out["min_games_default"] = min_games
+    out["is_ranking_eligible"] = (out["games"].fillna(0) >= min_games).astype(int)
+    out["eligible_for_default_ranking"] = out["is_ranking_eligible"]
+    out["sample_size_note"] = np.where(
+        max_games <= 2,
+        "Early season: rankings include players with 1+ game.",
+        np.where(
+            max_games <= 5,
+            f"Small sample: default ranking requires {min_games}+ games.",
+            ""
+        )
+    )
 
     out = _add_player_ranking_scores(out)
 
-    eligible = out["is_ranking_eligible"].eq(1)
+    # Rank every player with a valid score in the selected context.
+    # eligible_for_default_ranking still tells the app whether a player meets the
+    # default sample-size threshold, but the rank columns should not be blank just
+    # because the user lowers Min GP or reviews early-season/small-sample players.
+    eligible = pd.to_numeric(out["eligible_for_default_ranking"], errors="coerce").fillna(0).eq(1)
+    rankable = pd.to_numeric(out.get("overall_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
 
-    out["v22_overall_rank"] = np.nan
-    out["v22_position_rank"] = np.nan
+    out["overall_rank"] = np.nan
+    out["overall_percentile"] = np.nan
+    out["position_rank"] = np.nan
+    out["position_percentile"] = np.nan
+    out["role_context_rank"] = np.nan
+    out["role_context_percentile"] = np.nan
     out["offensive_rank"] = np.nan
     out["defensive_rank"] = np.nan
     out["faceoff_rank"] = np.nan
     out["goalie_rank"] = np.nan
 
-    if eligible.any():
-        out.loc[eligible, "v22_overall_rank"] = out.loc[eligible, "v22_overall_score"].rank(method="min", ascending=False)
-        out.loc[eligible, "v22_overall_percentile"] = _rank_pct(out.loc[eligible, "v22_overall_score"], True).values
+    if rankable.any():
+        out.loc[rankable, "overall_rank"] = out.loc[rankable, "overall_score"].rank(method="min", ascending=False)
+        out.loc[rankable, "overall_percentile"] = _rank_pct(out.loc[rankable, "overall_score"], True).values
 
-        for _, idx in out.loc[eligible].groupby("position", dropna=False).groups.items():
+        for _, idx in out.loc[rankable].groupby("position", dropna=False).groups.items():
             idx = list(idx)
-            out.loc[idx, "v22_position_rank"] = out.loc[idx, "v22_overall_score"].rank(method="min", ascending=False)
-            out.loc[idx, "v22_position_percentile"] = _rank_pct(out.loc[idx, "v22_overall_score"], True).values
+            out.loc[idx, "position_rank"] = out.loc[idx, "overall_score"].rank(method="min", ascending=False)
+            out.loc[idx, "position_percentile"] = _rank_pct(out.loc[idx, "overall_score"], True).values
 
-        out.loc[eligible, "offensive_rank"] = out.loc[eligible, "offensive_score"].rank(method="min", ascending=False)
+        if "role_context_value_score" in out.columns:
+            role_rankable = pd.to_numeric(out["role_context_value_score"], errors="coerce").notna()
+            for _, idx in out.loc[role_rankable].groupby("role_group", dropna=False).groups.items():
+                idx = list(idx)
+                out.loc[idx, "role_context_rank"] = out.loc[idx, "role_context_value_score"].rank(method="min", ascending=False)
+                out.loc[idx, "role_context_percentile"] = _rank_pct(out.loc[idx, "role_context_value_score"], True).values
 
-        mask = eligible & out["role_group"].eq("Defense")
+        off_rankable = pd.to_numeric(out.get("offensive_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
+        if off_rankable.any():
+            out.loc[off_rankable, "offensive_rank"] = out.loc[off_rankable, "offensive_score"].rank(method="min", ascending=False)
+
+        mask = out["role_group"].eq("Defense") & pd.to_numeric(out.get("defensive_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
         if mask.any():
             out.loc[mask, "defensive_rank"] = out.loc[mask, "defensive_score"].rank(method="min", ascending=False)
 
-        mask = eligible & out["role_group"].eq("Faceoff")
+        mask = out["role_group"].eq("Faceoff") & pd.to_numeric(out.get("faceoff_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
         if mask.any():
             out.loc[mask, "faceoff_rank"] = out.loc[mask, "faceoff_score"].rank(method="min", ascending=False)
 
-        mask = eligible & out["role_group"].eq("Goalie")
+        mask = out["role_group"].eq("Goalie") & pd.to_numeric(out.get("goalie_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
         if mask.any():
             out.loc[mask, "goalie_rank"] = out.loc[mask, "goalie_score"].rank(method="min", ascending=False)
 
-    out["overall_rank"] = out["v22_overall_rank"]
-    out["overall_percentile"] = out.get("v22_overall_percentile", np.nan)
-    out["position_rank"] = out["v22_position_rank"]
-    out["position_percentile"] = out.get("v22_position_percentile", np.nan)
-
-    if "save_pct_calc" in out.columns:
-        out["save_pct"] = out["save_pct_calc"]
-    if "faceoff_pct_calc" in out.columns:
-        out["faceoff_pct"] = out["faceoff_pct_calc"]
-
-    score_cols = [c for c in out.columns if c.endswith("_score") or c.endswith("_percentile") or c.endswith("_rank")]
+    score_cols = [c for c in out.columns if c.endswith("_score") or c.endswith("_percentile") or c.endswith("_rank") or c in ["overall_impact_score", "base_impact_score", "usage_possession_score", "usage_score"]]
     for c in score_cols:
         out[c] = pd.to_numeric(out[c], errors="coerce").round(2)
 
-    return out.sort_values(["ranking_sort_order", "v22_overall_rank"], na_position="last").reset_index(drop=True)
+    return out.sort_values(["ranking_sort_order", "overall_rank", "full_name"], na_position="last").reset_index(drop=True)
 
 
 ranking_contexts = []
+
 if "player_career_stats" in globals() and len(player_career_stats) > 0:
     ranking_contexts.append(_build_player_ranking_context(player_career_stats, "Career", "Career", 0))
+
 if "player_last10_stats" in globals() and len(player_last10_stats) > 0:
     ranking_contexts.append(_build_player_ranking_context(player_last10_stats, "Last 10", "Last 10", 1))
+
 if "player_last5_stats" in globals() and len(player_last5_stats) > 0:
     ranking_contexts.append(_build_player_ranking_context(player_last5_stats, "Last 5", "Last 5", 2))
+
 if "player_season_stats" in globals() and len(player_season_stats) > 0 and "season" in player_season_stats.columns:
     for i, season in enumerate(sorted(pd.to_numeric(player_season_stats["season"], errors="coerce").dropna().astype(int).unique())):
         sdf = player_season_stats[pd.to_numeric(player_season_stats["season"], errors="coerce").eq(season)].copy()

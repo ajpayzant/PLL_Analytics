@@ -18,7 +18,7 @@ DB_PATH = os.getenv("PLL_DB_PATH", os.path.join(DATA_DIR, "analytics_database", 
 ARTIFACT_INDEX_PATH = os.getenv("PLL_ARTIFACT_INDEX_PATH", os.path.join(DATA_DIR, "curated_data", "all_requested_seasons", "artifact_index.csv"))
 
 st.set_page_config(
-    page_title="PLL Data Platform",
+    page_title="PLL Analytics",
     page_icon="🥍",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -2002,8 +2002,8 @@ except Exception as e:
 # SIDEBAR
 # ============================================================
 
-st.sidebar.title("PLL Data Platform")
-st.sidebar.caption("Interactive test dashboard")
+st.sidebar.title("PLL Analytics")
+st.sidebar.caption("Interactive PLL Data Dashboard")
 
 st.sidebar.divider()
 
@@ -2124,9 +2124,10 @@ COL_LABELS.update({
     "opponent_turnovers_per_game": "Opponent Turnovers/G",
     "score_margin_per_game": "Score Margin/G",
     "ct_per_opponent_turnover": "CT per Opponent TO",
-    "v22_overall_rank": "Rank",
-    "v22_overall_score": "Overall Score",
-    "v22_position_rank": "Position Rank",
+    "overall_rank": "Overall Rank",
+    "view_rank": "View Rank",
+    "overall_score": "Overall Score",
+    "position_rank": "Position Rank",
     "base_impact_score": "Base Impact",
     "role_context_value_score": "Role Context Value",
     "role_primary_score": "Role Score",
@@ -2134,7 +2135,9 @@ COL_LABELS.update({
     "role_separation_score": "Peer Separation",
     "role_adjusted_z": "Peer Separation Z",
     "role_value_tier": "Role Tier",
-    "goal_value_score": "Goal Value",
+    "goal_value_score": "Scoring Value",
+    "scoring_value_score": "Scoring Value",
+    "playmaking_value_score": "Playmaking Value",
     "team_style_overall_score": "Overall Style",
     "offensive_volume_score": "Offensive Volume",
     "offensive_efficiency_score": "Offensive Efficiency",
@@ -2275,11 +2278,12 @@ def _pll_page_note(title, body):
 
 COL_LABELS.update({
     # Official ranking labels
-    "v22_overall_rank": "Rank",
-    "v22_overall_score": "Overall Score",
-    "v22_overall_percentile": "Overall Percentile",
-    "v22_position_rank": "Position Rank",
-    "v22_position_percentile": "Position Percentile",
+    "overall_rank": "Overall Rank",
+    "view_rank": "View Rank",
+    "overall_score": "Overall Score",
+    "overall_percentile": "Overall Percentile",
+    "position_rank": "Position Rank",
+    "position_percentile": "Position Percentile",
 
     # Make role-context terminology more user-friendly
     "role_group": "Role",
@@ -2302,7 +2306,7 @@ COL_LABELS.update({
     "two_point_goal_score": "2PT Goal Value",
     "scoring_points_score": "Scoring Points Value",
     "ground_ball_score": "Ground Ball Value",
-    "usage_score_for_v22": "Usage Value",
+    "usage_score": "Usage Value",
 
     # Team style labels
     "team_style_overall_score": "Overall Style Score",
@@ -2332,8 +2336,8 @@ def _pll_final_ranking_explanation():
 # APP HEADER
 # ============================================================
 
-st.title("PLL Data Platform")
-st.caption("Player, team, season, matchup, specialty, schedule, and data-quality dashboard.")
+st.title("PLL Analytics")
+st.caption("Player Rankings, Team Profiles, Matchup Research, and Trading Intelligence")
 
 tabs = st.tabs([
     "Overview",
@@ -6179,11 +6183,12 @@ COL_LABELS.update({
     "eligible_for_default_ranking": "Eligible",
     "sample_size_note": "Sample Note",
     "role_group": "Role",
-    "v22_overall_rank": "Rank",
-    "v22_overall_score": "Overall Score",
-    "v22_overall_percentile": "Overall %ile",
-    "v22_position_rank": "Pos Rank",
-    "v22_position_percentile": "Pos %ile",
+    "overall_rank": "Overall Rank",
+    "view_rank": "View Rank",
+    "overall_score": "Overall Score",
+    "overall_percentile": "Overall %ile",
+    "position_rank": "Pos Rank",
+    "position_percentile": "Pos %ile",
     "base_impact_score": "Base Impact",
     "role_primary_score": "Role Score",
     "role_primary_percentile": "Role %ile",
@@ -6196,7 +6201,9 @@ COL_LABELS.update({
     "role_value_tier": "Role Tier",
     "role_group_size": "Role Group Size",
     "role_reliability": "Role Reliability",
-    "goal_value_score": "Goal Value",
+    "goal_value_score": "Scoring Value",
+    "scoring_value_score": "Scoring Value",
+    "playmaking_value_score": "Playmaking Value",
     "one_point_goal_score": "1PT Value",
     "two_point_goal_score": "2PT Value",
     "overall_impact_score": "Base Impact",
@@ -6514,229 +6521,108 @@ def _pll_add_role_separation_metrics(df):
     return out
 
 
-def _pll_build_v22_player_rankings(rankings):
+def _pll_prepare_player_rankings(rankings):
     """
-    Official player ranking system.
+    Prepare official player rankings for display.
 
-    Key idea:
-    - Keep percentile because rank order matters.
-    - Add robust z-score separation because distance above/below peers matters.
-    - Combine role score + percentile + separation into role_context_value_score.
-    - Use that context value inside the final ranking formula.
+    The warehouse is the source of truth for player ranking scores. This function
+    only normalizes legacy column aliases and fills missing rank/percentile fields
+    for display safety; it does not recalculate official scores.
     """
-
     if rankings is None or len(rankings) == 0:
         return rankings
 
     df = rankings.copy()
 
-    if "role_group" not in df.columns:
-        df["role_group"] = np.where(
-            df.get("position", pd.Series("", index=df.index)).astype(str).isin(["G"]),
-            "Goalie",
-            np.where(
-                df.get("position", pd.Series("", index=df.index)).astype(str).isin(["FO", "FOS"]),
-                "Faceoff",
-                np.where(
-                    df.get("position", pd.Series("", index=df.index)).astype(str).isin(["D", "LSM", "SSDM"]),
-                    "Defense",
-                    "Offense"
-                )
+    # Compatibility aliases from older warehouse runs.
+    if "eligible_for_default_ranking" not in df.columns and "is_ranking_eligible" in df.columns:
+        df["eligible_for_default_ranking"] = pd.to_numeric(df["is_ranking_eligible"], errors="coerce").fillna(0).astype(int)
+
+    if "is_ranking_eligible" not in df.columns and "eligible_for_default_ranking" in df.columns:
+        df["is_ranking_eligible"] = pd.to_numeric(df["eligible_for_default_ranking"], errors="coerce").fillna(0).astype(int)
+
+    if "min_games_default" not in df.columns and "default_min_games_used" in df.columns:
+        df["min_games_default"] = df["default_min_games_used"]
+
+    if "default_min_games_used" not in df.columns and "min_games_default" in df.columns:
+        df["default_min_games_used"] = df["min_games_default"]
+
+    if "ranking_context_max_games" not in df.columns and "max_games_in_context" in df.columns:
+        df["ranking_context_max_games"] = df["max_games_in_context"]
+
+    if "max_games_in_context" not in df.columns and "ranking_context_max_games" in df.columns:
+        df["max_games_in_context"] = df["ranking_context_max_games"]
+
+    if "ranking_context_sort" not in df.columns and "ranking_sort_order" in df.columns:
+        df["ranking_context_sort"] = df["ranking_sort_order"]
+
+    if "ranking_sort_order" not in df.columns and "ranking_context_sort" in df.columns:
+        df["ranking_sort_order"] = df["ranking_context_sort"]
+
+    if "overall_score" not in df.columns:
+        for score_col in ["overall_score", "overall_impact_score", "base_impact_score"]:
+            if score_col in df.columns:
+                df["overall_score"] = pd.to_numeric(df[score_col], errors="coerce")
+                break
+
+    if "overall_impact_score" not in df.columns and "overall_score" in df.columns:
+        df["overall_impact_score"] = pd.to_numeric(df["overall_score"], errors="coerce")
+
+    if "usage_possession_score" not in df.columns and "usage_score" in df.columns:
+        df["usage_possession_score"] = df["usage_score"]
+
+    if "usage_score" not in df.columns and "usage_possession_score" in df.columns:
+        df["usage_score"] = df["usage_possession_score"]
+
+    if "scoring_value_score" not in df.columns and "goal_value_score" in df.columns:
+        df["scoring_value_score"] = df["goal_value_score"]
+
+    if "goal_value_score" not in df.columns and "scoring_value_score" in df.columns:
+        df["goal_value_score"] = df["scoring_value_score"]
+
+    # Playmaking Value should be created by the warehouse. If an older warehouse
+    # is accidentally loaded, keep the column available but blank rather than
+    # recalculating official rankings in Streamlit.
+    if "playmaking_value_score" not in df.columns:
+        df["playmaking_value_score"] = np.nan
+
+    if "offensive_creation_score" not in df.columns:
+        if "scoring_value_score" in df.columns and "playmaking_value_score" in df.columns:
+            df["offensive_creation_score"] = (
+                0.60 * pd.to_numeric(df["scoring_value_score"], errors="coerce").fillna(50)
+                + 0.40 * pd.to_numeric(df["playmaking_value_score"], errors="coerce").fillna(50)
             )
-        )
+        else:
+            df["offensive_creation_score"] = np.nan
 
-    if "overall_impact_score" in df.columns:
-        df["base_impact_score"] = pd.to_numeric(df["overall_impact_score"], errors="coerce")
-    else:
-        df["overall_impact_score"] = np.nan
-        df["base_impact_score"] = np.nan
-
-    required_numeric_cols = [
-        "one_point_goals_per_game",
-        "two_point_goals_per_game",
-        "scoring_points_per_game",
-        "points_per_game",
-        "goals_per_game",
-        "shots_per_game",
-        "ground_balls_per_game",
-        "usage_possession_score",
-        "offensive_score",
-        "defensive_score",
-        "faceoff_score",
-        "goalie_score",
-        "overall_impact_score",
-    ]
-
-    for c in required_numeric_cols:
-        if c not in df.columns:
-            df[c] = np.nan
-
-    # --------------------------------------------------------
-    # 1PT / 2PT scoring value
-    # --------------------------------------------------------
-
-    df["one_point_goal_score"] = (
-        df.groupby("ranking_context", group_keys=False)["one_point_goals_per_game"]
-          .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-    )
-
-    df["two_point_goal_score"] = (
-        df.groupby("ranking_context", group_keys=False)["two_point_goals_per_game"]
-          .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-    )
-
-    df["scoring_points_score"] = (
-        df.groupby("ranking_context", group_keys=False)["scoring_points_per_game"]
-          .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-    )
-
-    df["points_score"] = (
-        df.groupby("ranking_context", group_keys=False)["points_per_game"]
-          .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-    )
-
-    if "two_point_shots" in df.columns and "two_point_goals" in df.columns:
-        df["two_point_goal_pct_calc"] = (
-            pd.to_numeric(df["two_point_goals"], errors="coerce")
-            / pd.to_numeric(df["two_point_shots"], errors="coerce").replace(0, np.nan)
-        )
-        df["two_point_goal_efficiency_score"] = (
-            df.groupby("ranking_context", group_keys=False)["two_point_goal_pct_calc"]
-              .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-        )
-    else:
-        df["two_point_goal_efficiency_score"] = np.nan
-
-    df["goal_value_score"] = _pll_safe_mean(
-        df,
-        [
-            "scoring_points_score",
-            "points_score",
-            "one_point_goal_score",
-            "two_point_goal_score",
-            "two_point_goal_efficiency_score",
-        ]
-    )
-
-    df["goal_value_score"] = _pll_clip_score(df["goal_value_score"])
-
-    # --------------------------------------------------------
-    # Role primary score
-    # --------------------------------------------------------
-
-    role_to_score_col = {
-        "Offense": "offensive_score",
-        "Defense": "defensive_score",
-        "Faceoff": "faceoff_score",
-        "Goalie": "goalie_score",
-    }
-
-    df["role_primary_score"] = np.nan
-
-    for role_name, role_score_col in role_to_score_col.items():
-        role_mask = df["role_group"].astype(str).eq(role_name)
-
-        if role_score_col in df.columns:
-            df.loc[role_mask, "role_primary_score"] = pd.to_numeric(
-                df.loc[role_mask, role_score_col],
-                errors="coerce"
-            )
-
-    df["role_primary_percentile"] = (
-        df.groupby(["ranking_context", "role_group"], group_keys=False)["role_primary_score"]
-          .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-    )
-
-    df["ground_ball_score"] = (
-        df.groupby("ranking_context", group_keys=False)["ground_balls_per_game"]
-          .transform(lambda s: _pll_pct_rank(s, higher_is_better=True))
-        if "ground_balls_per_game" in df.columns
-        else np.nan
-    )
-
-    df = _pll_add_role_separation_metrics(df)
-
-    df["usage_score_for_v22"] = pd.to_numeric(df["usage_possession_score"], errors="coerce")
-
-    # --------------------------------------------------------
-    # official overall score
-    # --------------------------------------------------------
-
-    df["v22_overall_score"] = pd.to_numeric(df["overall_impact_score"], errors="coerce")
-
-    offense_mask = df["role_group"].astype(str).eq("Offense")
-    defense_mask = df["role_group"].astype(str).eq("Defense")
-    faceoff_mask = df["role_group"].astype(str).eq("Faceoff")
-    goalie_mask = df["role_group"].astype(str).eq("Goalie")
-
-    df.loc[offense_mask, "v22_overall_score"] = _pll_weighted_score(
-        df.loc[offense_mask],
-        {
-            "overall_impact_score": 0.62,
-            "role_context_value_score": 0.20,
-            "usage_score_for_v22": 0.10,
-            "goal_value_score": 0.08,
-        }
-    )
-
-    df.loc[defense_mask, "v22_overall_score"] = _pll_weighted_score(
-        df.loc[defense_mask],
-        {
-            "overall_impact_score": 0.60,
-            "role_context_value_score": 0.30,
-            "usage_score_for_v22": 0.10,
-        }
-    )
-
-    df.loc[faceoff_mask, "v22_overall_score"] = _pll_weighted_score(
-        df.loc[faceoff_mask],
-        {
-            "overall_impact_score": 0.65,
-            "role_context_value_score": 0.25,
-            "ground_ball_score": 0.10,
-        }
-    )
-
-    df.loc[goalie_mask, "v22_overall_score"] = _pll_weighted_score(
-        df.loc[goalie_mask],
-        {
-            "overall_impact_score": 0.62,
-            "role_context_value_score": 0.38,
-        }
-    )
-
-    df["v22_overall_score"] = _pll_clip_score(df["v22_overall_score"])
+    # Ensure expected display columns exist.
+    for col in [
+        "overall_rank", "overall_percentile", "position_rank", "position_percentile",
+        "offensive_rank", "defensive_rank", "faceoff_rank", "goalie_rank",
+        "role_context_value_score", "role_context_rank", "role_context_percentile",
+        "role_primary_score", "role_primary_percentile", "role_separation_score",
+        "scoring_value_score", "goal_value_score", "playmaking_value_score", "offensive_creation_score", "ground_ball_score", "base_impact_score",
+    ]:
+        if col not in df.columns:
+            df[col] = np.nan
 
     if "eligible_for_default_ranking" in df.columns:
-        eligible_mask = df["eligible_for_default_ranking"].fillna(False).astype(bool)
+        eligible_mask = pd.to_numeric(df["eligible_for_default_ranking"], errors="coerce").fillna(0).astype(bool)
     else:
-        eligible_mask = df["v22_overall_score"].notna()
+        eligible_mask = df["overall_score"].notna() if "overall_score" in df.columns else pd.Series(False, index=df.index)
 
-    df = _pll_rank_score_by_context(
-        df,
-        "v22_overall_score",
-        "v22_overall_rank",
-        "v22_overall_percentile",
-        eligible_mask
-    )
+    # Fill rank fields only when absent/missing. Do not alter warehouse ranks.
+    if "overall_score" in df.columns:
+        if df["overall_rank"].isna().all():
+            df = _pll_rank_score_by_context(df, "overall_score", "overall_rank", "overall_percentile", eligible_mask)
 
-    df["v22_position_rank"] = np.nan
-    df["v22_position_percentile"] = np.nan
-
-    if "position" in df.columns:
-        for _, idx in df.groupby(["ranking_context", "position"]).groups.items():
-            idx = list(idx)
-            valid = df.index.isin(idx) & eligible_mask & df["v22_overall_score"].notna()
-
-            if valid.sum() > 0:
-                df.loc[valid, "v22_position_rank"] = (
-                    df.loc[valid, "v22_overall_score"]
-                    .rank(ascending=False, method="min")
-                )
-                df.loc[valid, "v22_position_percentile"] = (
-                    df.loc[valid, "v22_overall_score"]
-                    .rank(ascending=True, pct=True, method="average") * 100
-                )
+        if df["position_rank"].isna().all() and "position" in df.columns:
+            for _, idx in df.groupby(["ranking_context", "position"]).groups.items():
+                idx = list(idx)
+                valid = df.index.isin(idx) & eligible_mask & df["overall_score"].notna()
+                if valid.sum() > 0:
+                    df.loc[valid, "position_rank"] = df.loc[valid, "overall_score"].rank(ascending=False, method="min")
+                    df.loc[valid, "position_percentile"] = df.loc[valid, "overall_score"].rank(ascending=True, pct=True, method="average") * 100
 
     return df
 
@@ -6870,7 +6756,7 @@ with tab_player_rankings:
             "Rebuild the warehouse to refresh player ranking data."
         )
     else:
-        rankings = _pll_build_v22_player_rankings(rankings)
+        rankings = _pll_prepare_player_rankings(rankings)
 
         context_options = _pll_context_order(
             rankings,
@@ -6964,13 +6850,16 @@ with tab_player_rankings:
             )
 
         with filter_cols[3]:
+            max_available_rows = int(max(10, len(context_rankings))) if len(context_rankings) else 10
+            default_ranking_rows = int(min(max_available_rows, max(100, max_available_rows)))
             ranking_rows = st.number_input(
                 "Rows",
                 min_value=10,
-                max_value=300,
-                value=75,
-                step=10,
-                key="player_rankings_rows"
+                max_value=max(500, max_available_rows),
+                value=default_ranking_rows,
+                step=25,
+                key="player_rankings_rows",
+                help="Increase this to review every matching player in the selected context. The default is all players in most season contexts."
             )
 
         with filter_cols[4]:
@@ -6981,9 +6870,9 @@ with tab_player_rankings:
             )
 
         if ranking_view == "Overall":
-            rank_col = "v22_overall_rank"
-            score_col = "v22_overall_score"
-            percentile_col = "v22_overall_percentile"
+            rank_col = "overall_rank"
+            score_col = "overall_score"
+            percentile_col = "overall_percentile"
             view_role = None
         elif ranking_view == "Offense":
             rank_col = "role_context_rank"
@@ -7034,22 +6923,39 @@ with tab_player_rankings:
                 )
             ]
 
+        # Stable ranking sort. Ranked rows always appear before unranked rows;
+        # rows without a persisted rank fall back to the selected score. This
+        # prevents small-sample / previously unranked players from floating above
+        # Rank 1 while still allowing the user to review every player.
         if rank_col in filtered_rankings.columns:
             filtered_rankings["_sort_rank"] = pd.to_numeric(filtered_rankings[rank_col], errors="coerce")
-            filtered_rankings = filtered_rankings.sort_values(
-                ["_sort_rank", score_col],
-                ascending=[True, False],
-                na_position="last"
-            )
-        elif score_col in filtered_rankings.columns:
-            filtered_rankings = filtered_rankings.sort_values(score_col, ascending=False, na_position="last")
+        else:
+            filtered_rankings["_sort_rank"] = np.nan
 
+        if score_col in filtered_rankings.columns:
+            filtered_rankings["_sort_score"] = pd.to_numeric(filtered_rankings[score_col], errors="coerce")
+        else:
+            filtered_rankings["_sort_score"] = np.nan
+
+        filtered_rankings["_is_unranked"] = filtered_rankings["_sort_rank"].isna().astype(int)
+        filtered_rankings = filtered_rankings.sort_values(
+            ["_is_unranked", "_sort_rank", "_sort_score", "games", "full_name"],
+            ascending=[True, True, False, False, True],
+            na_position="last"
+        )
+
+        # Continuous rank for the currently selected table/filter. This avoids
+        # confusion when Overall Rank skips numbers after filtering to a position,
+        # team, or role view.
+        filtered_rankings["view_rank"] = np.arange(1, len(filtered_rankings) + 1)
+
+        matching_player_count = len(filtered_rankings)
         filtered_rankings = filtered_rankings.head(int(ranking_rows)).copy()
 
         summary_cols = st.columns(6)
 
         with summary_cols[0]:
-            stat_card("Players", fmt_value(len(filtered_rankings), 0))
+            stat_card("Players Shown", f"{fmt_value(len(filtered_rankings), 0)} / {fmt_value(matching_player_count, 0)}")
 
         with summary_cols[1]:
             top_name = filtered_rankings["full_name"].iloc[0] if len(filtered_rankings) else "—"
@@ -7083,13 +6989,20 @@ with tab_player_rankings:
                 - **25% Role Percentile**
                 - **25% Peer Separation Score**
 
-                **Peer Separation Score** uses robust z-score distance from the role-group median and shrinks toward average when the role group sample is small.
+                **Peer Separation Score** uses IQR-based robust z-score distance from the role-group median and shrinks toward average when the role group sample is small.
+
+                **Usage Score** blends leaguewide usage value with role-peer usage value so primary offensive players are not understated and specialists are not artificially inflated.
 
                 **Overall Score**
-                - **Offense:** 62% Base Impact + 20% Role Context + 10% Usage + 8% Goal Value
-                - **Defense:** 60% Base Impact + 30% Role Context + 10% Usage
-                - **Faceoff:** 65% Base Impact + 25% Role Context + 10% Ground-Ball Value
-                - **Goalie:** 62% Base Impact + 38% Role Context
+                - **Offense:** 60% Base Impact + 20% Role Context + 10% Usage + 10% Offensive Creation
+                - **Offensive Creation:** 60% Scoring Value + 40% Playmaking Value
+                - **Defense:** 58% Base Impact + 34% Role Context + 8% Usage, with defensive impact driven more heavily by caused turnovers
+                - **Faceoff:** 74% Base Impact + 14% Role Context + 7% Ground-Ball Value + 5% Usage
+                - **Goalie:** 72% transfer-adjusted Base Impact + 12% transfer-adjusted Role Context + 10% transfer-adjusted Save Percentage + 6% transfer-adjusted Save Volume
+
+                **Goalie Transfer Adjustment** compresses goalie-only value toward the league-average baseline for the all-player Overall view. This is not a flat penalty: the dedicated Goalie view still uses full goalie-specific value, while Overall prevents a smaller goalie peer pool from dominating cross-position rankings.
+
+                **Score Scale Calibration** shifts each context slightly toward an average-player baseline near 50 without changing rank order inside that context.
                 """
             )
 
@@ -7102,42 +7015,60 @@ with tab_player_rankings:
 
         compact_cols_by_view = {
             "Overall": [
-                "v22_overall_rank",
+                "overall_rank",
+                "position_rank",
                 "full_name",
                 "position",
                 "role_group",
                 "teams",
                 "games",
-                "v22_overall_score",
-                "v22_position_rank",
+                "overall_score",
                 "base_impact_score",
                 "role_context_value_score",
                 "role_value_tier",
-                "role_adjusted_z",
-                "goal_value_score",
+                "offensive_score",
+                "usage_possession_score",
+                "defensive_score",
+                "faceoff_score",
+                "goalie_score",
+                "scoring_value_score",
+                "playmaking_value_score",
+                "ground_ball_score",
                 "points_per_game",
                 "scoring_points_per_game",
+                "goals_per_game",
                 "one_point_goals_per_game",
                 "two_point_goals_per_game",
-                "goals_per_game",
                 "assists_per_game",
                 "shots_per_game",
                 "touches_per_game",
+                "caused_turnovers_per_game",
+                "ground_balls_per_game",
+                "turnovers_per_game",
+                "faceoff_pct_for_ranking",
+                "faceoffs_per_game",
+                "faceoffs_won_per_game",
+                "save_pct_for_ranking",
+                "saves_per_game",
+                "scores_against_per_game",
+                "goals_against_per_game",
             ],
             "Offense": [
                 "role_context_rank",
-                "v22_overall_rank",
+                "overall_rank",
+                "position_rank",
                 "full_name",
                 "position",
                 "teams",
                 "games",
                 "role_context_value_score",
-                "v22_overall_score",
+                "overall_score",
                 "role_primary_score",
                 "role_primary_percentile",
                 "role_separation_score",
                 "role_value_tier",
-                "goal_value_score",
+                "scoring_value_score",
+                "playmaking_value_score",
                 "points_per_game",
                 "scoring_points_per_game",
                 "one_point_goals_per_game",
@@ -7149,13 +7080,17 @@ with tab_player_rankings:
             ],
             "Defense": [
                 "role_context_rank",
-                "v22_overall_rank",
+                "overall_rank",
+                "position_rank",
                 "full_name",
                 "position",
                 "teams",
                 "games",
                 "role_context_value_score",
-                "v22_overall_score",
+                "overall_score",
+                "defensive_score",
+                "ct_score",
+                "ground_ball_score",
                 "role_primary_score",
                 "role_primary_percentile",
                 "role_separation_score",
@@ -7168,13 +7103,14 @@ with tab_player_rankings:
             ],
             "Faceoff": [
                 "role_context_rank",
-                "v22_overall_rank",
+                "overall_rank",
+                "position_rank",
                 "full_name",
                 "position",
                 "teams",
                 "games",
                 "role_context_value_score",
-                "v22_overall_score",
+                "overall_score",
                 "role_primary_score",
                 "role_primary_percentile",
                 "role_separation_score",
@@ -7187,13 +7123,17 @@ with tab_player_rankings:
             ],
             "Goalie": [
                 "role_context_rank",
-                "v22_overall_rank",
+                "overall_rank",
+                "position_rank",
                 "full_name",
                 "position",
                 "teams",
                 "games",
                 "role_context_value_score",
-                "v22_overall_score",
+                "overall_score",
+                "goalie_score",
+                "save_pct_score",
+                "saves_score",
                 "role_primary_score",
                 "role_primary_percentile",
                 "role_separation_score",
@@ -7216,6 +7156,8 @@ with tab_player_rankings:
             "defensive_score",
             "faceoff_score",
             "goalie_score",
+            "scoring_value_score",
+            "playmaking_value_score",
             "ground_ball_score",
             "one_point_goal_score",
             "two_point_goal_score",
@@ -7226,6 +7168,9 @@ with tab_player_rankings:
 
         ranking_display_cols = compact_cols_by_view.get(ranking_view, compact_cols_by_view["Overall"])
 
+        # Always show the continuous rank for the current filtered table first.
+        ranking_display_cols = ["view_rank"] + [c for c in ranking_display_cols if c != "view_rank"]
+
         if show_detail_cols:
             ranking_display_cols = ranking_display_cols + extra_cols
 
@@ -7234,16 +7179,63 @@ with tab_player_rankings:
             if c and c in filtered_rankings.columns
         ]))
 
+        ranking_table_df = filtered_rankings[ranking_display_cols].copy()
+
+        # Display-only masking: role-specific component scores should be blank
+        # for players who do not play that role. Raw stat categories can still
+        # remain visible in the Overall view where they are meaningful.
+        if "role_group" in filtered_rankings.columns:
+            role_series = filtered_rankings["role_group"].astype(str)
+            role_score_blank_rules = {
+                "offensive_score": "Offense",
+                "defensive_score": "Defense",
+                "faceoff_score": "Faceoff",
+                "goalie_score": "Goalie",
+            }
+            for score_name, role_name in role_score_blank_rules.items():
+                if score_name in ranking_table_df.columns:
+                    ranking_table_df.loc[~role_series.eq(role_name), score_name] = np.nan
+
+            specialist_stat_blank_rules = {
+                "Faceoff": ["faceoff_pct_for_ranking", "faceoffs_per_game", "faceoffs_won_per_game"],
+                "Goalie": ["save_pct_for_ranking", "saves_per_game", "scores_against_per_game", "goals_against_per_game"],
+            }
+            for role_name, cols_to_blank in specialist_stat_blank_rules.items():
+                not_role_mask = ~role_series.eq(role_name)
+                for blank_col in cols_to_blank:
+                    if blank_col in ranking_table_df.columns:
+                        ranking_table_df.loc[not_role_mask, blank_col] = np.nan
+
+        # For position/ranking-specific views, remove columns that are entirely
+        # blank after role masking so the table does not end with empty fields.
+        protected_cols = {"view_rank", "overall_rank", "position_rank", "full_name", "position", "role_group", "teams", "games", "overall_score", "role_context_value_score", "role_value_tier"}
+        drop_blank_cols = []
+        for c in ranking_table_df.columns:
+            if c in protected_cols:
+                continue
+            if ranking_table_df[c].isna().all():
+                drop_blank_cols.append(c)
+        if drop_blank_cols:
+            ranking_table_df = ranking_table_df.drop(columns=drop_blank_cols)
+
+        # Final numeric cleanup for readability. display_table will apply the
+        # final renderer, but rounding here also makes downloaded CSVs cleaner.
+        for c in ranking_table_df.columns:
+            if c in {"view_rank", "overall_rank", "position_rank", "role_context_rank", "games"}:
+                ranking_table_df[c] = pd.to_numeric(ranking_table_df[c], errors="coerce").round(0)
+            elif pd.api.types.is_numeric_dtype(ranking_table_df[c]):
+                ranking_table_df[c] = pd.to_numeric(ranking_table_df[c], errors="coerce").round(2)
+
         st.markdown("### Ranking Table")
         display_table(
-            filtered_rankings[ranking_display_cols],
+            ranking_table_df,
             height=540,
             hide_cols=[],
             max_cols=None
         )
 
         download_csv(
-            filtered_rankings[ranking_display_cols],
+            ranking_table_df,
             f"pll_player_rankings_{selected_ranking_context.replace(' ', '_').lower()}_{ranking_view.lower()}_official.csv",
             label="Download filtered rankings CSV"
         )
@@ -7282,7 +7274,7 @@ with tab_player_rankings:
             fig = px.scatter(
                 scatter_df,
                 x="role_context_value_score",
-                y="v22_overall_score",
+                y="overall_score",
                 color="role_group",
                 size="games",
                 hover_name="full_name",
@@ -7290,7 +7282,7 @@ with tab_player_rankings:
                     "position",
                     "teams",
                     "games",
-                    "v22_overall_rank",
+                    "overall_rank",
                     "base_impact_score",
                     "role_primary_score",
                     "role_primary_percentile",
@@ -7336,10 +7328,10 @@ with tab_player_rankings:
                 detail_cols = st.columns(5)
 
                 with detail_cols[0]:
-                    stat_card("Overall Rank", fmt_value(row.get("v22_overall_rank", np.nan), 0))
+                    stat_card("Overall Rank", fmt_value(row.get("overall_rank", np.nan), 0))
 
                 with detail_cols[1]:
-                    stat_card("Overall Score", fmt_value(row.get("v22_overall_score", np.nan), 2))
+                    stat_card("Overall Score", fmt_value(row.get("overall_score", np.nan), 2))
 
                 with detail_cols[2]:
                     stat_card("Role Context", fmt_value(row.get("role_context_value_score", np.nan), 2))
@@ -7363,7 +7355,7 @@ with tab_player_rankings:
                         "Ground Ball Value",
                     ],
                     "score": [
-                        row.get("v22_overall_score", np.nan),
+                        row.get("overall_score", np.nan),
                         row.get("base_impact_score", np.nan),
                         row.get("role_context_value_score", np.nan),
                         row.get("role_primary_score", np.nan),
@@ -7402,10 +7394,10 @@ with tab_player_rankings:
                         "role_group",
                         "teams",
                         "games",
-                        "v22_overall_rank",
-                        "v22_position_rank",
-                        "v22_overall_score",
-                        "v22_overall_percentile",
+                        "overall_rank",
+                        "position_rank",
+                        "overall_score",
+                        "overall_percentile",
                         "base_impact_score",
                         "role_context_value_score",
                         "role_primary_score",
@@ -8372,16 +8364,18 @@ with tab_dictionary:
             ["Peer Separation", "Magnitude-based score based on robust z-score distance from role peers."],
             ["Role Context Value", "Weighted blend of role score, role percentile, and role separation."],
             ["Role Tier", "Plain-English tier based on adjusted role separation, such as Elite or High-End."],
-            ["Goal Value", "Scoring value signal that includes scoring points, 1PT goals, 2PT goals, and scoring efficiency."],
+            ["Scoring Value", "Direct scoring value signal that includes scoring points, 1PT goals, 2PT goals, and scoring efficiency."],
+            ["Playmaking Value", "Creation value signal that includes assists, assists per touch, points per touch, passing involvement, and turnover security."],
+            ["Goalie Transfer Adjustment", "Overall-only adjustment that compresses goalie-specific scores toward average instead of subtracting fixed points; goalie-specific views keep full goalie value."],
         ], columns=["Ranking Term", "Definition"])
 
         display_table(ranking_defs, height=360)
 
         formula_df = pd.DataFrame([
             ["Offense", "62% Base Impact + 20% Role Context + 10% Usage + 8% Goal Value"],
-            ["Defense", "60% Base Impact + 30% Role Context + 10% Usage"],
-            ["Faceoff", "65% Base Impact + 25% Role Context + 10% Ground-Ball Value"],
-            ["Goalie", "62% Base Impact + 38% Role Context"],
+            ["Defense", "58% Base Impact + 34% Role Context + 8% Usage"],
+            ["Faceoff", "74% Base Impact + 14% Role Context + 7% Ground-Ball Value + 5% Usage"],
+            ["Goalie", "72% transfer-adjusted Base Impact + 12% transfer-adjusted Role Context + 10% transfer-adjusted Save % + 6% transfer-adjusted Save Volume"],
         ], columns=["Role Group", "Overall Score Formula"])
 
         display_table(formula_df, height=240)
