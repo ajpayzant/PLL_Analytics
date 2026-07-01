@@ -378,10 +378,9 @@ def snake_case(s):
 
 def to_num_scalar(x):
     try:
-        v = pd.to_numeric(pd.Series([x]), errors="coerce").iloc[0]
-    except Exception:
-        v = np.nan
-    return v
+        return float(x)
+    except (TypeError, ValueError):
+        return np.nan
 
 def coerce_numeric(df, cols):
     out = df.copy()
@@ -673,7 +672,6 @@ def load_manual_slug_inventory():
 def fetch_event_list_for_year(year, season_segment=COMPETITION_TYPE):
     candidate_urls = [
         f"{PLL_API_BASE}/events?year={year}&seasonSegment={season_segment}",
-        f"{PLL_API_BASE}/events?seasonSegment={season_segment}&year={year}",
         f"{PLL_API_BASE}/events?year={year}",
     ]
 
@@ -1070,13 +1068,15 @@ def build_discovery_inventories():
         if len(numeric_df) > 0:
             fallback_frames.append(numeric_df)
 
-        if season == 2023:
-            dated_df = discover_dated_season(season, "2023-06-01", "2023-09-30")
-            if len(dated_df) > 0:
-                fallback_frames.append(dated_df)
-
-        if season == 2022:
-            dated_df = discover_dated_season(season, "2022-06-01", "2022-09-30")
+        dated_ranges = {
+            2022: ("2022-06-01", "2022-09-30"),
+            2023: ("2023-06-01", "2023-09-30"),
+            2024: ("2024-05-01", "2024-09-30"),
+            2025: ("2025-05-01", "2025-09-30"),
+        }
+        if season in dated_ranges:
+            start, end = dated_ranges[season]
+            dated_df = discover_dated_season(season, start, end)
             if len(dated_df) > 0:
                 fallback_frames.append(dated_df)
 
@@ -2380,8 +2380,12 @@ def add_player_rate_columns(df):
     if "faceoffs" in out.columns and "faceoffs_won" in out.columns:
         out["faceoff_pct_calc"] = np.where(out["faceoffs"] > 0, out["faceoffs_won"] / out["faceoffs"], np.nan)
 
-    if "saa" in out.columns and "saves" in out.columns:
-        out["save_pct_calc"] = np.where(out["saa"] > 0, out["saves"] / out["saa"], np.nan)
+    if "saves" in out.columns and "goals_against" in out.columns:
+        out["save_pct_calc"] = np.where(
+            (out["saves"] + out["goals_against"]) > 0,
+            out["saves"] / (out["saves"] + out["goals_against"]),
+            np.nan
+        )
 
     if "games" in out.columns:
         for c in PLAYER_SUM_COLS:
@@ -2868,7 +2872,7 @@ def build_player_last_n_stats(player_games, n=5, by_season=False):
     if len(player_games) == 0:
         return pd.DataFrame()
 
-    base = player_games.sort_values(["season", "game_date_utc", "game_number", "game_id"]).copy()
+    base = player_games.sort_values(["season", "game_date_utc", "game_number", "game_id"], na_position="first").copy()
 
     group_cols = ["player_id"]
     if by_season:
@@ -2907,7 +2911,7 @@ def build_team_last_n_stats(team_games, n=5, by_season=False):
     if len(team_games) == 0:
         return pd.DataFrame()
 
-    base = team_games.sort_values(["season", "game_date_utc", "game_number", "game_id"]).copy()
+    base = team_games.sort_values(["season", "game_date_utc", "game_number", "game_id"], na_position="first").copy()
 
     group_cols = ["team_id"]
     if by_season:
@@ -3688,7 +3692,7 @@ def _rank_pct(series, higher_is_better=True):
     s = pd.to_numeric(series, errors="coerce")
     if s.notna().sum() == 0:
         return pd.Series(np.nan, index=series.index)
-    return s.rank(pct=True, ascending=not higher_is_better) * 100
+    return s.rank(pct=True, ascending=not higher_is_better, na_option="keep") * 100
 
 
 def _minmax_score(series, higher_is_better=True):
@@ -4182,7 +4186,7 @@ def _make_unique_storage_columns(columns):
             clean_cols.append(base)
         else:
             seen[base] += 1
-            clean_cols.append(f"{base}_{seen[base] + 1}")
+            clean_cols.append(f"{base}_{seen[base]}")
     return clean_cols
 
 

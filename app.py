@@ -135,6 +135,13 @@ st.markdown("""
         margin-bottom: 14px;
     }
 
+    .note-title {
+        font-size: 1.04rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin-bottom: 6px;
+    }
+
     div[data-testid="stDataFrame"] {
         border-radius: 14px;
     }
@@ -149,7 +156,7 @@ COL_LABELS = {
     "row_type": "Row",
     "game_label": "Game",
     "season": "Season",
-    "game_number": "Game",
+    "game_number": "Game #",
     "game_date_utc": "Date",
     "game_date_guess": "Date",
     "team_name": "Team",
@@ -187,7 +194,7 @@ COL_LABELS = {
     "scores_against_average": "SAA Avg",
     "goals_against": "Goals Against",
     "two_point_goals_against": "2PT Goals Against",
-    "saa": "SAA",
+    "saa": "Scores Against Avg",
     "faceoffs": "FO",
     "faceoffs_won": "FO Won",
     "faceoffs_lost": "FO Lost",
@@ -207,9 +214,9 @@ COL_LABELS = {
     "pim": "PIM",
     "touches": "Touches",
     "total_passes": "Passes",
-    "time_in_possession": "Poss. Time",
-    "official_total_possessions": "Official Poss.",
-    "offensive_sequence_proxy": "Off. Seq.",
+    "time_in_possession": "Possession Time",
+    "official_total_possessions": "Official Possessions",
+    "offensive_sequence_proxy": "Offensive Sequences",
     "points_per_game": "Points/G",
     "scoring_points_per_game": "Scoring Pts/G",
     "scores_per_game": "Scores/G",
@@ -224,15 +231,15 @@ COL_LABELS = {
     "caused_turnovers_per_game": "CT/G",
     "saves_per_game": "Saves/G",
     "scores_against_per_game": "Scores Against/G",
-    "saa_per_game": "SAA/G",
+    "saa_per_game": "Scores Against Avg/G",
     "faceoffs_per_game": "FO/G",
     "faceoffs_won_per_game": "FO Won/G",
     "faceoffs_lost_per_game": "FO Lost/G",
     "touches_per_game": "Touches/G",
     "total_passes_per_game": "Passes/G",
-    "time_in_possession_per_game": "Poss. Time/G",
-    "official_total_possessions_per_game": "Official Poss./G",
-    "offensive_sequence_proxy_per_game": "Off. Seq./G",
+    "time_in_possession_per_game": "Possession Time/G",
+    "official_total_possessions_per_game": "Official Possessions/G",
+    "offensive_sequence_proxy_per_game": "Offensive Sequences/G",
     # >>> PLL_DEFENSE_EXTENSION_LABELS_START
     "team_scores": "Scores For",
     "team_scores_per_game": "Scores For/G",
@@ -267,17 +274,11 @@ COL_LABELS = {
     "team_time_in_possession_per_game": "Possession Time/G",
     "opponent_time_in_possession": "Opp Possession Time",
     "opponent_time_in_possession_per_game": "Opp Possession Time/G",
-    "time_in_possession": "Possession Time",
-    "time_in_possession_per_game": "Possession Time/G",
     "time_in_possession_display": "Possession Time",
     "time_in_possession_pct_display": "Possession %",
     "time_in_possession_available_game": "TOP Available",
     "possession_data_status": "Possession Data Status",
     "possession_data_note": "Possession Data Note",
-    "official_total_possessions": "Official Possessions",
-    "official_total_possessions_per_game": "Official Possessions/G",
-    "offensive_sequence_proxy": "Offensive Sequences",
-    "offensive_sequence_proxy_per_game": "Offensive Sequences/G",
     "passes_per_touch": "Passes/Touch",
     "seconds_possession_per_touch": "Seconds/Touch",
     "touches_per_offensive_sequence_proxy": "Touches/Sequence",
@@ -299,17 +300,7 @@ COL_LABELS = {
     "team_b_caused_turnovers": "Opponent CT",
     "team_a_possession": "Team Possession",
     "team_b_possession": "Opponent Possession",
-    "time_in_possession": "Possession Time",
-    "time_in_possession_per_game": "Possession/G",
     "time_in_possession_pct": "Possession %",
-    "touches": "Touches",
-    "touches_per_game": "Touches/G",
-    "total_passes": "Passes",
-    "total_passes_per_game": "Passes/G",
-    "official_total_possessions": "Official Possessions",
-    "official_total_possessions_per_game": "Official Possessions/G",
-    "offensive_sequence_proxy": "Offensive Sequences",
-    "offensive_sequence_proxy_per_game": "Offensive Sequences/G",
     "event_status_label": "Raw Status",
     "status_display": "Status",
     "away_team_name": "Away",
@@ -357,7 +348,7 @@ def make_unique_columns(cols):
             output.append(base)
         else:
             seen[base] += 1
-            output.append(f"{base} {seen[base] + 1}")
+            output.append(f"{base} {seen[base]}")
 
     return output
 
@@ -522,23 +513,6 @@ def prepare_display_df(df, hide_cols=None, date_cols=None, max_cols=None):
                 out[c] = out[c].apply(lambda v: format_seconds_for_table(v, total=False))
     # <<< PLL_DEFENSE_EXTENSION_PREPARE_DISPLAY_END
 
-
-    # >>> PLL_MATCHUP_UI_PREPARE_DISPLAY_START
-    for c in list(out.columns):
-        c_lower = str(c).lower()
-
-        if c_lower in {
-            "time_in_possession",
-            "time_in_possession_per_game",
-            "team_time_in_possession",
-            "team_time_in_possession_per_game",
-            "opponent_time_in_possession",
-            "opponent_time_in_possession_per_game"
-        }:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(mmss_from_seconds)
-
-    # <<< PLL_MATCHUP_UI_PREPARE_DISPLAY_END
 
     for c in out.columns:
         if str(c).lower() == "season":
@@ -834,12 +808,21 @@ def read_table(table_name: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def startup_counts():
+    df = query_df("""
+        SELECT
+            (SELECT COUNT(*) FROM clean.game_manifest) AS completed_games,
+            (SELECT COUNT(*) FROM clean.player_game_stats) AS player_game_rows,
+            (SELECT COUNT(*) FROM clean.team_game_stats) AS team_game_rows,
+            (SELECT COUNT(*) FROM clean.player_directory) AS players,
+            (SELECT COUNT(*) FROM clean.team_directory) AS teams
+    """)
+    row = df.iloc[0]
     return {
-        "completed_games": int(query_df("SELECT COUNT(*) AS n FROM clean.game_manifest")["n"].iloc[0]),
-        "player_game_rows": int(query_df("SELECT COUNT(*) AS n FROM clean.player_game_stats")["n"].iloc[0]),
-        "team_game_rows": int(query_df("SELECT COUNT(*) AS n FROM clean.team_game_stats")["n"].iloc[0]),
-        "players": int(query_df("SELECT COUNT(*) AS n FROM clean.player_directory")["n"].iloc[0]),
-        "teams": int(query_df("SELECT COUNT(*) AS n FROM clean.team_directory")["n"].iloc[0]),
+        "completed_games": int(row["completed_games"]),
+        "player_game_rows": int(row["player_game_rows"]),
+        "team_game_rows": int(row["team_game_rows"]),
+        "players": int(row["players"]),
+        "teams": int(row["teams"]),
     }
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1344,7 +1327,6 @@ def render_completed_game_review(matchup, away_id, away_name, home_id, home_name
             shots,
             shot_pct,
             shots_on_goal,
-            shots_on_goal_pct,
             ground_balls,
             turnovers,
             caused_turnovers,
@@ -1421,7 +1403,6 @@ def render_completed_game_review(matchup, away_id, away_name, home_id, home_name
             saves,
             save_pct,
             clean_saves,
-            clean_save_pct,
             messy_saves
         FROM clean.player_game_stats
         WHERE game_id = ?
@@ -1506,7 +1487,6 @@ def render_completed_game_review(matchup, away_id, away_name, home_id, home_name
         "goals_against",
         "save_pct",
         "saves",
-        "clean_save_pct",
         "clean_saves",
         "messy_saves",
         "touches",
@@ -2027,10 +2007,11 @@ st.sidebar.caption("Interactive test dashboard")
 
 st.sidebar.divider()
 
+default_seasons = [max(seasons)] if seasons else []
 selected_seasons = st.sidebar.multiselect(
     "Global Season Filter",
     options=seasons,
-    default=seasons
+    default=default_seasons
 )
 
 team_options = teams_df["team_name"].dropna().tolist()
@@ -2066,7 +2047,6 @@ st.sidebar.caption("Global filters primarily affect Overview and Leaderboards. E
 
 COL_LABELS.update({
     "season": "Season",
-    "game_number": "Game #",
     "game_date_utc": "Date",
     "game_date_guess": "Date",
     "full_name": "Player",
@@ -2107,15 +2087,7 @@ COL_LABELS.update({
     "turnovers_per_game": "Turnovers/G",
     "caused_turnovers": "Caused Turnovers",
     "caused_turnovers_per_game": "Caused Turnovers/G",
-    "touches": "Touches",
-    "touches_per_game": "Touches/G",
-    "total_passes": "Passes",
-    "total_passes_per_game": "Passes/G",
-    "time_in_possession": "Possession Time",
-    "time_in_possession_per_game": "Possession Time/G",
     "time_in_possession_per_game_mmss": "Possession Time/G",
-    "offensive_sequence_proxy": "Offensive Sequences",
-    "offensive_sequence_proxy_per_game": "Offensive Sequences/G",
     "faceoffs": "Faceoffs",
     "faceoffs_per_game": "Faceoffs/G",
     "faceoffs_won": "Faceoffs Won",
@@ -2132,8 +2104,6 @@ COL_LABELS.update({
     "messy_saves_per_game": "Messy Saves/G",
     "goals_against": "Goals Against",
     "goals_against_per_game": "Goals Against/G",
-    "saa": "Shots Against",
-    "saa_per_game": "Shots Against/G",
     "shots_faced_calc": "Shots Faced",
     "shots_faced_per_game_calc": "Shots Faced/G",
     "save_pct": "Save Percentage",
@@ -3192,8 +3162,8 @@ with tab_matchup:
                 b.ground_balls AS team_b_ground_balls,
                 a.caused_turnovers AS team_a_caused_turnovers,
                 b.caused_turnovers AS team_b_caused_turnovers,
-                a.time_in_possession_display AS team_a_possession,
-                b.time_in_possession_display AS team_b_possession
+                a.time_in_possession AS team_a_possession,
+                b.time_in_possession AS team_b_possession
             FROM a
             INNER JOIN b
                 ON a.game_id = b.game_id
@@ -6198,8 +6168,6 @@ with tab_team_compare:
 # PLAYER RANKINGS + TEAM STYLE PROFILE TABS
 # ============================================================
 
-import plotly.graph_objects as go
-
 if "COL_LABELS" not in globals():
     COL_LABELS = {}
 
@@ -6359,15 +6327,6 @@ def _pll_context_order(df, context_col, type_col, sort_col):
 
     return out[context_col].tolist()
 
-
-def _pll_sample_warning(df, note_col="sample_size_note"):
-    """
-    Final-app behavior:
-    sample-size notes are not shown as warning boxes by default.
-    The underlying sample_size_note field remains available in tables/downloads
-    when explicitly included.
-    """
-    return
 
 def _pll_pct_rank(series, higher_is_better=True):
     s = pd.to_numeric(series, errors="coerce")
@@ -6941,8 +6900,6 @@ with tab_player_rankings:
             )
 
         context_rankings = rankings[rankings["ranking_context"] == selected_ranking_context].copy()
-
-        _pll_sample_warning(context_rankings)
 
         with controls[2]:
             default_min_games = 1
@@ -7532,8 +7489,6 @@ with tab_team_profiles:
         profile_context_df = team_profiles[
             team_profiles["profile_context"] == selected_profile_context
         ].copy()
-
-        _pll_sample_warning(profile_context_df)
 
         team_profile_options = sorted(profile_context_df["team_name"].dropna().astype(str).unique().tolist())
 
