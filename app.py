@@ -2011,7 +2011,8 @@ default_seasons = [max(seasons)] if seasons else []
 selected_seasons = st.sidebar.multiselect(
     "Global Season Filter",
     options=seasons,
-    default=default_seasons
+    default=default_seasons,
+    key="sidebar_seasons"
 )
 
 team_options = teams_df["team_name"].dropna().tolist()
@@ -2019,13 +2020,15 @@ team_options = teams_df["team_name"].dropna().tolist()
 selected_teams = st.sidebar.multiselect(
     "Global Team Filter",
     options=team_options,
-    default=[]
+    default=[],
+    key="sidebar_teams"
 )
 
 selected_positions = st.sidebar.multiselect(
     "Global Position Filter",
     options=positions,
-    default=[]
+    default=[],
+    key="sidebar_positions"
 )
 
 min_games = st.sidebar.number_input(
@@ -2033,7 +2036,8 @@ min_games = st.sidebar.number_input(
     min_value=1,
     max_value=100,
     value=5,
-    step=1
+    step=1,
+    key="sidebar_min_games"
 )
 
 st.sidebar.caption("Global filters primarily affect Overview and Leaderboards. Explorer pages have their own filters.")
@@ -3025,10 +3029,11 @@ with tab_matchup:
             ]
 
             if matchup_defense_metric_options:
+                _matchup_def_idx = matchup_defense_metric_options.index("scores_allowed_per_game") if "scores_allowed_per_game" in matchup_defense_metric_options else 0
                 matchup_defense_metric = st.selectbox(
                     "Defense matchup chart metric",
                     options=matchup_defense_metric_options,
-                    index=1 if "scores_allowed_per_game" in matchup_defense_metric_options else 0,
+                    index=_matchup_def_idx,
                     format_func=pretty_col,
                     key="matchup_defense_metric"
                 )
@@ -3081,10 +3086,12 @@ with tab_matchup:
 
         display_comparison_matrix(form_df, "team_name", form_metrics, height=420)
 
+        _form_chart_options = [m for m in form_metrics if m in form_df.columns]
+        _form_chart_idx = _form_chart_options.index("scores_per_game") if "scores_per_game" in _form_chart_options else 0
         form_chart_metric = st.selectbox(
             "Form chart metric",
-            options=[m for m in form_metrics if m in form_df.columns],
-            index=1 if "scores_per_game" in form_df.columns else 0,
+            options=_form_chart_options,
+            index=_form_chart_idx,
             format_func=pretty_col,
             key="matchup_form_metric"
         )
@@ -6124,10 +6131,11 @@ with tab_team_compare:
             ]
 
             if defense_chart_options:
+                _def_chart_default_idx = defense_chart_options.index("scores_allowed_per_game") if "scores_allowed_per_game" in defense_chart_options else 0
                 defense_chart_metric = st.selectbox(
                     "Defensive chart metric",
                     options=defense_chart_options,
-                    index=1 if "scores_allowed_per_game" in defense_chart_options else 0,
+                    index=_def_chart_default_idx,
                     format_func=pretty_col,
                     key="team_compare_defense_chart_metric"
                 )
@@ -6148,10 +6156,12 @@ with tab_team_compare:
 
         st.markdown("### Visual Comparison")
 
+        _team_chart_options = [m for m in team_compare_metrics if m in compare_df.columns]
+        _team_chart_default_idx = _team_chart_options.index("scores_per_game") if "scores_per_game" in _team_chart_options else 0
         chart_metric = st.selectbox(
             "Chart metric",
-            options=[m for m in team_compare_metrics if m in compare_df.columns],
-            index=5 if "scores_per_game" in compare_df.columns else 0,
+            options=_team_chart_options,
+            index=_team_chart_default_idx,
             format_func=pretty_col,
             key="team_compare_chart_metric"
         )
@@ -8259,7 +8269,7 @@ with tab_schedule:
     )
 
     status_options = ["all"] + sorted(schedule_fixed["status_display"].dropna().unique().tolist())
-    selected_status = st.selectbox("Status", options=status_options, index=0)
+    selected_status = st.selectbox("Status", options=status_options, index=0, key="schedule_status_filter")
 
     sched = schedule_fixed[schedule_fixed["season"] == schedule_season].copy()
 
