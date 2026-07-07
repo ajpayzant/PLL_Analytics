@@ -1493,77 +1493,67 @@ def render_completed_game_review(matchup, away_id, away_name, home_id, home_name
         "total_passes",
     ]
 
-    tab_off, tab_def, tab_fo, tab_goalie = st.tabs([
-        "Offense",
-        "Defense",
-        "Faceoff",
-        "Goalie"
-    ])
+    _box_view = st.radio(
+        "Player box score view",
+        options=["Offense", "Defense", "Faceoff", "Goalie"],
+        horizontal=True,
+        key=f"completed_box_view_{selected_game_id}",
+    )
 
-    with tab_off:
+    if _box_view == "Offense":
         off_df = selected_players[
             [c for c in offensive_cols if c in selected_players.columns]
         ].sort_values(
             [c for c in ["points", "goals", "assists", "shots"] if c in selected_players.columns],
             ascending=False
         )
-
         display_table(off_df, height=420)
 
-    with tab_def:
+    elif _box_view == "Defense":
         def_df = selected_players.copy()
-
         if "caused_turnovers" in def_df.columns:
             def_df = def_df[
                 (pd.to_numeric(def_df["caused_turnovers"], errors="coerce").fillna(0) > 0)
                 | (def_df["position"].astype(str).isin(["D", "LSM", "SSDM", "G"]))
                 | (pd.to_numeric(def_df.get("ground_balls", 0), errors="coerce").fillna(0) > 0)
             ]
-
         def_df = def_df[
             [c for c in defensive_cols if c in def_df.columns]
         ].sort_values(
             [c for c in ["caused_turnovers", "ground_balls", "touches"] if c in def_df.columns],
             ascending=False
         )
-
         display_table(def_df, height=420)
 
-    with tab_fo:
+    elif _box_view == "Faceoff":
         fo_df = selected_players.copy()
-
         if "faceoffs" in fo_df.columns:
             fo_df = fo_df[
                 (fo_df["position"].astype(str).isin(["FO", "FOS"]))
                 | (pd.to_numeric(fo_df["faceoffs"], errors="coerce").fillna(0) > 0)
             ]
-
         fo_df = fo_df[
             [c for c in faceoff_cols if c in fo_df.columns]
         ].sort_values(
             [c for c in ["faceoffs", "faceoffs_won", "ground_balls"] if c in fo_df.columns],
             ascending=False
         )
-
         display_table(fo_df, height=360)
 
-    with tab_goalie:
+    else:
         goalie_df = selected_players.copy()
-
         if "saves" in goalie_df.columns:
             goalie_df = goalie_df[
                 (goalie_df["position"].astype(str) == "G")
                 | (pd.to_numeric(goalie_df["saves"], errors="coerce").fillna(0) > 0)
                 | (pd.to_numeric(goalie_df.get("scores_against", 0), errors="coerce").fillna(0) > 0)
             ]
-
         goalie_df = goalie_df[
             [c for c in goalie_cols if c in goalie_df.columns]
         ].sort_values(
             [c for c in ["saves", "save_pct"] if c in goalie_df.columns],
             ascending=False
         )
-
         display_table(goalie_df, height=320)
 
 
@@ -1885,57 +1875,21 @@ def render_clean_matchup_team_profile(matchup_season, away_id, away_name, home_i
         ("Seconds/Touch", "seconds_possession_per_touch", "number", 2),
     ]
 
-    tab_pg, tab_totals, tab_rates, tab_poss = st.tabs([
-        "Per Game",
-        "Totals",
-        "Rates",
-        "Possession / Touches"
-    ])
+    _profile_view = st.radio(
+        "Team profile view",
+        options=["Per Game", "Totals", "Rates", "Possession / Touches"],
+        horizontal=True,
+        key=f"matchup_team_profile_view_{away_id}_{home_id}",
+    )
 
-    with tab_pg:
-        pg_matrix = pll_profile_matrix(
-            season_profiles,
-            away_id,
-            away_name,
-            home_id,
-            home_name,
-            per_game_specs
-        )
-        display_table(pg_matrix, height=520)
-
-    with tab_totals:
-        total_matrix = pll_profile_matrix(
-            season_profiles,
-            away_id,
-            away_name,
-            home_id,
-            home_name,
-            total_specs
-        )
-        display_table(total_matrix, height=560)
-
-    with tab_rates:
-        rate_matrix = pll_profile_matrix(
-            season_profiles,
-            away_id,
-            away_name,
-            home_id,
-            home_name,
-            rate_specs
-        )
-        display_table(rate_matrix, height=420)
-
-    with tab_poss:
-        poss_matrix = pll_profile_matrix(
-            season_profiles,
-            away_id,
-            away_name,
-            home_id,
-            home_name,
-            possession_specs
-        )
-        display_table(poss_matrix, height=520)
-
+    if _profile_view == "Per Game":
+        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, per_game_specs), height=520)
+    elif _profile_view == "Totals":
+        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, total_specs), height=560)
+    elif _profile_view == "Rates":
+        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, rate_specs), height=420)
+    else:
+        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, possession_specs), height=520)
         st.caption(
             "Possession time is based on the provider possession-time field converted from seconds. "
             "For games with missing or unusual provider possession timing, review the Possession Data QC section."
