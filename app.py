@@ -3997,99 +3997,10 @@ with tab_teams:
         )
 
 
-        _tp_team_id = globals().get("team_id", None)
-
-        _tp_selected_team = globals().get("selected_team", None)
-
-        _tp_selected_context = globals().get("selected_context", None)
-
-
-        if _tp_team_id is None:
-
-            for _candidate_name in ["selected_team_id", "team_profile_team_id", "current_team_id"]:
-
-                _candidate_value = globals().get(_candidate_name, None)
-
-                if _candidate_value is not None:
-
-                    _tp_team_id = _candidate_value
-
-                    break
-
-
-        if _tp_selected_team is None:
-
-            for _candidate_name in ["selected_team_name", "team_profile_team", "current_team_name"]:
-
-                _candidate_value = globals().get(_candidate_name, None)
-
-                if _candidate_value is not None:
-
-                    _tp_selected_team = _candidate_value
-
-                    break
-
-
-        if _tp_selected_context is None:
-
-            for _candidate_name in ["team_context", "selected_team_context", "team_profile_context"]:
-
-                _candidate_value = globals().get(_candidate_name, None)
-
-                if _candidate_value is not None:
-
-                    _tp_selected_context = _candidate_value
-
-                    break
-
-
-        if _tp_team_id is None and _tp_selected_team is not None:
-
-            _team_lookup = query_df("""
-
-                SELECT team_id, team_name
-
-                FROM clean.team_directory
-
-                WHERE LOWER(team_name) = LOWER(?)
-
-                   OR LOWER(team_id) = LOWER(?)
-
-                LIMIT 1
-
-            """, [str(_tp_selected_team), str(_tp_selected_team)])
-
-
-            if len(_team_lookup) > 0:
-
-                _tp_team_id = _team_lookup["team_id"].iloc[0]
-
-                _tp_selected_team = _team_lookup["team_name"].iloc[0]
-
-
-        if _tp_selected_team is None and _tp_team_id is not None:
-
-            _team_lookup = query_df("""
-
-                SELECT team_id, team_name
-
-                FROM clean.team_directory
-
-                WHERE team_id = ?
-
-                LIMIT 1
-
-            """, [str(_tp_team_id)])
-
-
-            if len(_team_lookup) > 0:
-
-                _tp_selected_team = _team_lookup["team_name"].iloc[0]
-
-
-        if _tp_selected_context is None:
-
-            _tp_selected_context = "Career"
+        _tp_team_id = team_id
+        _tp_selected_team = selected_team
+        _tp_selected_context = selected_context if selected_context is not None else "Career"
+        _tp_ctx_slug = str(_tp_selected_context).replace(" ", "_").replace("/", "_")
 
 
         if _tp_team_id is None and _tp_selected_team is None:
@@ -4244,7 +4155,7 @@ with tab_teams:
 
                                         index=0,
 
-                                        key=f"team_profile_player_time_frame_{_tp_team_id}_{_tp_selected_context}"
+                                        key=f"team_profile_player_time_frame_{_tp_team_id}_{_tp_ctx_slug}"
 
                                     )
 
@@ -4283,7 +4194,7 @@ with tab_teams:
 
                                         disabled=_season_selector_disabled,
 
-                                        key=f"team_profile_player_specific_season_{_tp_team_id}_{_tp_selected_context}"
+                                        key=f"team_profile_player_specific_season_{_tp_team_id}_{_tp_ctx_slug}"
 
                                     )
 
@@ -4610,7 +4521,7 @@ with tab_teams:
 
                                             default=[],
 
-                                            key=f"team_profile_player_positions_{_tp_team_id}_{_tp_selected_context}_{_team_player_context_label}"
+                                            key=f"team_profile_player_positions_{_tp_team_id}_{_tp_ctx_slug}_{_team_player_context_label.replace(' ', '_')}"
 
                                         )
 
@@ -4629,7 +4540,7 @@ with tab_teams:
 
                                             step=1,
 
-                                            key=f"team_profile_player_min_games_{_tp_team_id}_{_tp_selected_context}_{_team_player_context_label}"
+                                            key=f"team_profile_player_min_games_{_tp_team_id}_{_tp_ctx_slug}_{_team_player_context_label.replace(' ', '_')}"
 
                                         )
 
@@ -4709,7 +4620,7 @@ with tab_teams:
 
                                             format_func=pretty_col,
 
-                                            key=f"team_profile_player_sort_{_tp_team_id}_{_tp_selected_context}_{_team_player_context_label}"
+                                            key=f"team_profile_player_sort_{_tp_team_id}_{_tp_ctx_slug}_{_team_player_context_label.replace(' ', '_')}"
 
                                         )
 
@@ -4722,7 +4633,7 @@ with tab_teams:
 
                                         horizontal=True,
 
-                                        key=f"team_profile_player_table_view_{_tp_team_id}_{_tp_selected_context}_{_team_player_context_label}"
+                                        key=f"team_profile_player_table_view_{_tp_team_id}_{_tp_ctx_slug}_{_team_player_context_label.replace(' ', '_')}"
 
                                     )
 
