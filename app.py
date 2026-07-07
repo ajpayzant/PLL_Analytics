@@ -1493,67 +1493,77 @@ def render_completed_game_review(matchup, away_id, away_name, home_id, home_name
         "total_passes",
     ]
 
-    _box_view = st.radio(
-        "Player box score view",
-        options=["Offense", "Defense", "Faceoff", "Goalie"],
-        horizontal=True,
-        key=f"completed_box_view_{selected_game_id}",
-    )
+    tab_off, tab_def, tab_fo, tab_goalie = st.tabs([
+        "Offense",
+        "Defense",
+        "Faceoff",
+        "Goalie"
+    ])
 
-    if _box_view == "Offense":
+    with tab_off:
         off_df = selected_players[
             [c for c in offensive_cols if c in selected_players.columns]
         ].sort_values(
             [c for c in ["points", "goals", "assists", "shots"] if c in selected_players.columns],
             ascending=False
         )
+
         display_table(off_df, height=420)
 
-    elif _box_view == "Defense":
+    with tab_def:
         def_df = selected_players.copy()
+
         if "caused_turnovers" in def_df.columns:
             def_df = def_df[
                 (pd.to_numeric(def_df["caused_turnovers"], errors="coerce").fillna(0) > 0)
                 | (def_df["position"].astype(str).isin(["D", "LSM", "SSDM", "G"]))
                 | (pd.to_numeric(def_df.get("ground_balls", 0), errors="coerce").fillna(0) > 0)
             ]
+
         def_df = def_df[
             [c for c in defensive_cols if c in def_df.columns]
         ].sort_values(
             [c for c in ["caused_turnovers", "ground_balls", "touches"] if c in def_df.columns],
             ascending=False
         )
+
         display_table(def_df, height=420)
 
-    elif _box_view == "Faceoff":
+    with tab_fo:
         fo_df = selected_players.copy()
+
         if "faceoffs" in fo_df.columns:
             fo_df = fo_df[
                 (fo_df["position"].astype(str).isin(["FO", "FOS"]))
                 | (pd.to_numeric(fo_df["faceoffs"], errors="coerce").fillna(0) > 0)
             ]
+
         fo_df = fo_df[
             [c for c in faceoff_cols if c in fo_df.columns]
         ].sort_values(
             [c for c in ["faceoffs", "faceoffs_won", "ground_balls"] if c in fo_df.columns],
             ascending=False
         )
+
         display_table(fo_df, height=360)
 
-    else:
+    with tab_goalie:
         goalie_df = selected_players.copy()
+
         if "saves" in goalie_df.columns:
             goalie_df = goalie_df[
                 (goalie_df["position"].astype(str) == "G")
                 | (pd.to_numeric(goalie_df["saves"], errors="coerce").fillna(0) > 0)
                 | (pd.to_numeric(goalie_df.get("scores_against", 0), errors="coerce").fillna(0) > 0)
             ]
+
         goalie_df = goalie_df[
             [c for c in goalie_cols if c in goalie_df.columns]
         ].sort_values(
             [c for c in ["saves", "save_pct"] if c in goalie_df.columns],
             ascending=False
         )
+
         display_table(goalie_df, height=320)
 
 
@@ -1875,36 +1885,57 @@ def render_clean_matchup_team_profile(matchup_season, away_id, away_name, home_i
         ("Seconds/Touch", "seconds_possession_per_touch", "number", 2),
     ]
 
-    _profile_view = st.radio(
-        "Team profile view",
-        options=["Per Game", "Totals", "Rates", "Possession / Touches"],
-        horizontal=True,
-        key=f"matchup_team_profile_view_{away_id}_{home_id}",
-    )
+    tab_pg, tab_totals, tab_rates, tab_poss = st.tabs([
+        "Per Game",
+        "Totals",
+        "Rates",
+        "Possession / Touches"
+    ])
 
-    if _profile_view == "Per Game":
+    with tab_pg:
         pg_matrix = pll_profile_matrix(
-            season_profiles, away_id, away_name, home_id, home_name, per_game_specs
+            season_profiles,
+            away_id,
+            away_name,
+            home_id,
+            home_name,
+            per_game_specs
         )
         display_table(pg_matrix, height=520)
 
-    elif _profile_view == "Totals":
+    with tab_totals:
         total_matrix = pll_profile_matrix(
-            season_profiles, away_id, away_name, home_id, home_name, total_specs
+            season_profiles,
+            away_id,
+            away_name,
+            home_id,
+            home_name,
+            total_specs
         )
         display_table(total_matrix, height=560)
 
-    elif _profile_view == "Rates":
+    with tab_rates:
         rate_matrix = pll_profile_matrix(
-            season_profiles, away_id, away_name, home_id, home_name, rate_specs
+            season_profiles,
+            away_id,
+            away_name,
+            home_id,
+            home_name,
+            rate_specs
         )
         display_table(rate_matrix, height=420)
 
-    else:
+    with tab_poss:
         poss_matrix = pll_profile_matrix(
-            season_profiles, away_id, away_name, home_id, home_name, possession_specs
+            season_profiles,
+            away_id,
+            away_name,
+            home_id,
+            home_name,
+            possession_specs
         )
         display_table(poss_matrix, height=520)
+
         st.caption(
             "Possession time is based on the provider possession-time field converted from seconds. "
             "For games with missing or unusual provider possession timing, review the Possession Data QC section."
@@ -2998,11 +3029,10 @@ with tab_matchup:
             ]
 
             if matchup_defense_metric_options:
-                _matchup_def_idx = matchup_defense_metric_options.index("scores_allowed_per_game") if "scores_allowed_per_game" in matchup_defense_metric_options else 0
                 matchup_defense_metric = st.selectbox(
                     "Defense matchup chart metric",
                     options=matchup_defense_metric_options,
-                    index=_matchup_def_idx,
+                    index=1 if "scores_allowed_per_game" in matchup_defense_metric_options else 0,
                     format_func=pretty_col,
                     key="matchup_defense_metric"
                 )
@@ -3055,12 +3085,10 @@ with tab_matchup:
 
         display_comparison_matrix(form_df, "team_name", form_metrics, height=420)
 
-        _form_chart_options = [m for m in form_metrics if m in form_df.columns]
-        _form_chart_idx = _form_chart_options.index("scores_per_game") if "scores_per_game" in _form_chart_options else 0
         form_chart_metric = st.selectbox(
             "Form chart metric",
-            options=_form_chart_options,
-            index=_form_chart_idx,
+            options=[m for m in form_metrics if m in form_df.columns],
+            index=1 if "scores_per_game" in form_df.columns else 0,
             format_func=pretty_col,
             key="matchup_form_metric"
         )
@@ -3958,195 +3986,966 @@ with tab_teams:
         # >>> PLL_TEAM_PROFILE_ROSTER_TOTALS_START
 
         st.markdown("### Team Player Totals")
-        st.caption("Player production for the selected team. Use filters below to adjust time frame and view.")
 
-        # Always render all widgets unconditionally — keys are stable per team_id only
-        _tp_filter_cols = st.columns([1.15, 1.0, 1.4, 0.85, 1.15])
+        st.caption(
 
-        with _tp_filter_cols[0]:
-            _tp_time_frame = st.selectbox(
-                "Time Frame",
-                options=["Team Profile Context", "All Time", "Specific Season"],
-                index=0,
-                key=f"team_profile_player_time_frame_{team_id}"
-            )
+            "Player production for the selected team profile. Use the filters below to review all-time team totals, a specific season, or the active team profile context."
 
-        # Load player data for this team
-        _tp_player_rows = pd.DataFrame()
-        try:
-            _tp_player_rows = query_df("""
-                SELECT p.*
-                FROM marts.player_season_stats_by_team p
-                WHERE CAST(p.team_id AS VARCHAR) = ?
-            """, [str(team_id)])
-        except Exception:
-            pass
-
-        _tp_available_seasons = []
-        if len(_tp_player_rows) > 0 and "season" in _tp_player_rows.columns:
-            _tp_available_seasons = (
-                _tp_player_rows["season"].dropna().astype(int)
-                .sort_values().unique().tolist()
-            )
-
-        _tp_season_opts = _tp_available_seasons if _tp_available_seasons else [int(selected_context) if selected_context != "Career" else max(seasons) if seasons else 2026]
-        _tp_season_default = _tp_season_opts[-1]
-        try:
-            if selected_context != "Career":
-                _ctx_int = int(selected_context)
-                if _ctx_int in _tp_season_opts:
-                    _tp_season_default = _ctx_int
-        except Exception:
-            pass
-
-        with _tp_filter_cols[1]:
-            _tp_specific_season = st.selectbox(
-                "Season",
-                options=_tp_season_opts,
-                index=_tp_season_opts.index(_tp_season_default),
-                disabled=(_tp_time_frame != "Specific Season"),
-                key=f"team_profile_player_specific_season_{team_id}"
-            )
-
-        with _tp_filter_cols[2]:
-            _tp_pos_filter = st.multiselect(
-                "Positions",
-                options=["A", "M", "D", "FO", "SSDM", "LSM", "G"],
-                default=[],
-                key=f"team_profile_player_positions_{team_id}"
-            )
-
-        with _tp_filter_cols[3]:
-            _tp_min_games = st.number_input(
-                "Min Games",
-                min_value=0, max_value=100, value=0, step=1,
-                key=f"team_profile_player_min_games_{team_id}"
-            )
-
-        with _tp_filter_cols[4]:
-            _tp_sort_by = st.selectbox(
-                "Sort By",
-                options=["points", "goals", "assists", "shots", "ground_balls",
-                         "caused_turnovers", "saves", "faceoffs_won",
-                         "points_per_game", "goals_per_game", "assists_per_game"],
-                index=0,
-                format_func=pretty_col,
-                key=f"team_profile_player_sort_{team_id}"
-            )
-
-        _tp_table_view = st.radio(
-            "Player Table View",
-            options=["Summary", "Per Game", "Specialists"],
-            horizontal=True,
-            key=f"team_profile_player_table_view_{team_id}"
         )
 
-        if len(_tp_player_rows) == 0:
-            st.info("Player season totals by team are not available for this team.")
+
+        _tp_team_id = team_id
+        _tp_selected_team = selected_team
+        _tp_selected_context = selected_context if selected_context is not None else "Career"
+
+
+        if _tp_team_id is None and _tp_selected_team is None:
+
+            st.info("Select a team to view team player totals.")
+
         else:
-            # Filter by time frame
-            if _tp_time_frame == "Team Profile Context":
-                if selected_context == "Career":
-                    _tp_base = _tp_player_rows.copy()
-                else:
-                    try:
-                        _ctx_s = int(selected_context)
-                        _tp_base = _tp_player_rows[
-                            pd.to_numeric(_tp_player_rows["season"], errors="coerce") == _ctx_s
-                        ].copy()
-                    except Exception:
-                        _tp_base = _tp_player_rows.copy()
-            elif _tp_time_frame == "All Time":
-                _tp_base = _tp_player_rows.copy()
+
+            _pst_table_check = query_df("""
+
+                SELECT COUNT(*) AS n
+
+                FROM information_schema.tables
+
+                WHERE table_schema = 'marts'
+
+                  AND table_name = 'player_season_stats_by_team'
+
+            """)
+
+
+            if int(_pst_table_check["n"].iloc[0]) == 0:
+
+                st.info("Player season totals by team are not available yet.")
+
             else:
-                _tp_base = _tp_player_rows[
-                    pd.to_numeric(_tp_player_rows["season"], errors="coerce") == int(_tp_specific_season)
-                ].copy()
 
-            # Aggregate multi-season rows
-            if "season" in _tp_base.columns and pd.to_numeric(_tp_base["season"], errors="coerce").nunique() > 1:
-                _tp_id_cols = [c for c in ["player_id", "full_name"] if c in _tp_base.columns] or ["full_name"]
-                _tp_num_cols = [c for c in _tp_base.select_dtypes(include="number").columns if c != "season"]
-                _tp_agg = {c: "sum" for c in _tp_num_cols}
-                if "position" in _tp_base.columns:
-                    _tp_agg["position"] = lambda s: s.dropna().astype(str).mode().iloc[0] if len(s.dropna()) else None
-                if "team_id" in _tp_base.columns:
-                    _tp_agg["team_id"] = "last"
-                if "team_name" in _tp_base.columns:
-                    _tp_agg["team_name"] = "last"
-                _tp_base = _tp_base.groupby(_tp_id_cols, dropna=False).agg(_tp_agg).reset_index()
+                try:
 
-            # Compute per-game rates
-            if "games" in _tp_base.columns:
-                _tp_g = pd.to_numeric(_tp_base["games"], errors="coerce").replace(0, np.nan)
-                for _tc, _rc in [("points","points_per_game"),("goals","goals_per_game"),
-                                  ("assists","assists_per_game"),("shots","shots_per_game"),
-                                  ("ground_balls","ground_balls_per_game"),("turnovers","turnovers_per_game"),
-                                  ("caused_turnovers","caused_turnovers_per_game"),("saves","saves_per_game"),
-                                  ("touches","touches_per_game"),("faceoffs_won","faceoffs_won_per_game")]:
-                    if _tc in _tp_base.columns:
-                        _tp_base[_rc] = pd.to_numeric(_tp_base[_tc], errors="coerce") / _tp_g
+                    _pst_cols = _pll_get_table_columns("marts", "player_season_stats_by_team")
 
-            # Apply filters
-            if _tp_pos_filter and "position" in _tp_base.columns:
-                _tp_base = _tp_base[_tp_base["position"].astype(str).isin(_tp_pos_filter)]
-            if "games" in _tp_base.columns:
-                _tp_base = _tp_base[pd.to_numeric(_tp_base["games"], errors="coerce").fillna(0) >= _tp_min_games]
+                except Exception:
 
-            # Sort
-            _tp_sort_col = _tp_sort_by if _tp_sort_by in _tp_base.columns else (
-                "points" if "points" in _tp_base.columns else _tp_base.columns[0]
-            )
-            _tp_base = _tp_base.sort_values(_tp_sort_col, ascending=False, na_position="last")
+                    _pst_cols_df = query_df("""
 
-            if len(_tp_base) == 0:
-                st.info("No players match the current filters.")
-            else:
-                # Summary cards
-                _tp_cards = st.columns(4)
-                with _tp_cards[0]:
-                    stat_card("Players", fmt_value(len(_tp_base), 0))
-                with _tp_cards[1]:
-                    stat_card("Team", str(selected_team))
-                with _tp_cards[2]:
-                    stat_card("Time Frame", _tp_time_frame)
-                with _tp_cards[3]:
-                    _tp_top = _tp_base["full_name"].iloc[0] if "full_name" in _tp_base.columns else "—"
-                    stat_card("Top Player", str(_tp_top))
+                        SELECT column_name
 
-                # Chart
-                if "full_name" in _tp_base.columns and _tp_sort_col in _tp_base.columns:
-                    safe_bar_chart(
-                        _tp_base.head(15).sort_values(_tp_sort_col),
-                        x_col="full_name", y_col=_tp_sort_col,
-                        color_col="position" if "position" in _tp_base.columns else None,
-                        title=f"{selected_team} — Player Leaders by {pretty_col(_tp_sort_col)}",
-                        orientation="h"
-                    )
+                        FROM information_schema.columns
 
-                # Table columns by view
-                if _tp_table_view == "Per Game":
-                    _tp_cols = ["full_name","position","games","points_per_game","goals_per_game",
-                                "assists_per_game","shots_per_game","ground_balls_per_game",
-                                "caused_turnovers_per_game","turnovers_per_game","touches_per_game"]
-                elif _tp_table_view == "Specialists":
-                    _tp_cols = ["full_name","position","games","faceoffs_won","faceoffs_won_per_game",
-                                "saves","saves_per_game","caused_turnovers","caused_turnovers_per_game"]
+                        WHERE table_schema = 'marts'
+
+                          AND table_name = 'player_season_stats_by_team'
+
+                        ORDER BY ordinal_position
+
+                    """)
+
+                    _pst_cols = _pst_cols_df["column_name"].astype(str).tolist()
+
+
+                _has_team_id = "team_id" in _pst_cols
+
+                _has_team_name = "team_name" in _pst_cols
+
+                _has_season = "season" in _pst_cols
+
+
+                if not _has_season:
+
+                    st.warning("Player season totals by team table is missing the season column.")
+
+                elif not _has_team_id and not _has_team_name:
+
+                    st.warning("Player season totals by team table is missing team_id/team_name columns.")
+
                 else:
-                    _tp_cols = ["full_name","position","games","points","goals","assists",
-                                "shots","ground_balls","turnovers","caused_turnovers","touches"]
 
-                _tp_cols = [c for c in _tp_cols if c in _tp_base.columns]
-                display_table(_tp_base[_tp_cols], height=430, hide_cols=[], max_cols=None)
+                    _team_filter_parts = []
 
-                with st.expander("Full player table", expanded=False):
-                    display_table(_tp_base, height=430, hide_cols=[], max_cols=None)
+                    _team_filter_params = []
 
-                download_csv(
-                    _tp_base,
-                    f"{selected_team.replace(' ', '_').lower()}_player_totals.csv",
-                    label="Download team player totals CSV"
-                )
+
+                    if _has_team_id and _tp_team_id is not None:
+
+                        _team_filter_parts.append("CAST(p.team_id AS VARCHAR) = ?")
+
+                        _team_filter_params.append(str(_tp_team_id))
+
+
+                    if _has_team_name and _tp_selected_team is not None:
+
+                        _team_filter_parts.append("LOWER(CAST(p.team_name AS VARCHAR)) = LOWER(?)")
+
+                        _team_filter_params.append(str(_tp_selected_team))
+
+
+                    if not _team_filter_parts:
+
+                        st.info("Could not resolve the selected team for player totals.")
+
+                    else:
+
+                        _team_filter_sql = "(" + " OR ".join(_team_filter_parts) + ")"
+
+
+                        _team_player_all_rows = query_df(f"""
+
+                            SELECT p.*
+
+                            FROM marts.player_season_stats_by_team p
+
+                            WHERE {_team_filter_sql}
+
+                        """, _team_filter_params)
+
+
+                        if len(_team_player_all_rows) == 0:
+
+                            st.info(f"No player totals are available for {_tp_selected_team or _tp_team_id}.")
+
+                        else:
+
+                            _team_player_all_rows = _team_player_all_rows.copy()
+
+
+                            _available_seasons = (
+
+                                _team_player_all_rows["season"]
+
+                                .dropna()
+
+                                .astype(int)
+
+                                .sort_values()
+
+                                .unique()
+
+                                .tolist()
+
+                            )
+
+
+                            if not _available_seasons:
+
+                                st.info("No seasons are available for the selected team.")
+
+                            else:
+
+                                _time_frame_options = ["Team Profile Context", "All Time", "Specific Season"]
+
+
+                                _filter_cols = st.columns([1.15, 1.0, 1.4, 0.85, 1.15])
+
+
+                                with _filter_cols[0]:
+
+                                    _team_player_time_frame = st.selectbox(
+
+                                        "Time Frame",
+
+                                        options=_time_frame_options,
+
+                                        index=0,
+
+                                        key=f"team_profile_player_time_frame_{_tp_team_id}"
+
+                                    )
+
+
+                                _default_specific_season = _available_seasons[-1]
+
+
+                                try:
+
+                                    if str(_tp_selected_context).lower() != "career":
+
+                                        _context_season = int(_tp_selected_context)
+
+
+                                        if _context_season in _available_seasons:
+
+                                            _default_specific_season = _context_season
+
+                                except Exception:
+
+                                    pass
+
+
+                                _season_selector_disabled = _team_player_time_frame != "Specific Season"
+
+
+                                with _filter_cols[1]:
+
+                                    _team_player_specific_season = st.selectbox(
+
+                                        "Season",
+
+                                        options=_available_seasons,
+
+                                        index=_available_seasons.index(_default_specific_season),
+
+                                        disabled=_season_selector_disabled,
+
+                                        key=f"team_profile_player_specific_season_{_tp_team_id}"
+
+                                    )
+
+
+                                if _team_player_time_frame == "Team Profile Context":
+
+                                    if str(_tp_selected_context).lower() == "career":
+
+                                        _team_player_base = _team_player_all_rows.copy()
+
+                                        _team_player_context_label = "All Time"
+
+                                    else:
+
+                                        try:
+
+                                            _context_season_int = int(_tp_selected_context)
+
+                                            _team_player_base = _team_player_all_rows[
+
+                                                pd.to_numeric(_team_player_all_rows["season"], errors="coerce") == _context_season_int
+
+                                            ].copy()
+
+                                            _team_player_context_label = f"{_context_season_int} Season"
+
+                                        except Exception:
+
+                                            _team_player_base = _team_player_all_rows.copy()
+
+                                            _team_player_context_label = "All Time"
+
+                                elif _team_player_time_frame == "All Time":
+
+                                    _team_player_base = _team_player_all_rows.copy()
+
+                                    _team_player_context_label = "All Time"
+
+                                else:
+
+                                    _team_player_base = _team_player_all_rows[
+
+                                        pd.to_numeric(_team_player_all_rows["season"], errors="coerce") == int(_team_player_specific_season)
+
+                                    ].copy()
+
+                                    _team_player_context_label = f"{int(_team_player_specific_season)} Season"
+
+
+                                _multi_season = (
+
+                                    len(_team_player_base) > 0
+
+                                    and pd.to_numeric(_team_player_base["season"], errors="coerce").nunique() > 1
+
+                                )
+
+
+                                if _multi_season:
+
+                                    _id_cols = [
+
+                                        c for c in ["player_id", "full_name"]
+
+                                        if c in _team_player_base.columns
+
+                                    ]
+
+
+                                    if not _id_cols and "full_name" in _team_player_base.columns:
+
+                                        _id_cols = ["full_name"]
+
+
+                                    _sum_cols = [
+
+                                        c for c in [
+
+                                            "games",
+
+                                            "points",
+
+                                            "scoring_points",
+
+                                            "one_point_goals",
+
+                                            "two_point_goals",
+
+                                            "goals",
+
+                                            "assists",
+
+                                            "shots",
+
+                                            "shots_on_goal",
+
+                                            "two_point_shots",
+
+                                            "ground_balls",
+
+                                            "turnovers",
+
+                                            "caused_turnovers",
+
+                                            "faceoffs_won",
+
+                                            "faceoffs_lost",
+
+                                            "faceoffs",
+
+                                            "saves",
+
+                                            "clean_saves",
+
+                                            "messy_saves",
+
+                                            "scores_against",
+
+                                            "goals_against",
+
+                                            "touches",
+
+                                            "total_passes",
+
+                                            "penalties",
+
+                                            "penalty_time",
+
+                                        ]
+
+                                        if c in _team_player_base.columns
+
+                                    ]
+
+
+                                    _agg_dict = {c: "sum" for c in _sum_cols}
+
+
+                                    if "position" in _team_player_base.columns:
+
+                                        _agg_dict["position"] = (
+
+                                            lambda s: s.dropna().astype(str).mode().iloc[0]
+
+                                            if len(s.dropna())
+
+                                            else None
+
+                                        )
+
+
+                                    if "position_name" in _team_player_base.columns:
+
+                                        _agg_dict["position_name"] = (
+
+                                            lambda s: s.dropna().astype(str).mode().iloc[0]
+
+                                            if len(s.dropna())
+
+                                            else None
+
+                                        )
+
+
+                                    if "team_id" in _team_player_base.columns:
+
+                                        _agg_dict["team_id"] = "last"
+
+
+                                    if "team_name" in _team_player_base.columns:
+
+                                        _agg_dict["team_name"] = "last"
+
+
+                                    _team_player_display_base = (
+
+                                        _team_player_base
+
+                                        .groupby(_id_cols, dropna=False)
+
+                                        .agg(_agg_dict)
+
+                                        .reset_index()
+
+                                    )
+
+
+                                    _team_player_display_base["season"] = "All Time"
+
+                                else:
+
+                                    _team_player_display_base = _team_player_base.copy()
+
+
+                                if len(_team_player_display_base) > 0:
+
+                                    if "games" in _team_player_display_base.columns:
+
+                                        _games = pd.to_numeric(
+
+                                            _team_player_display_base["games"],
+
+                                            errors="coerce"
+
+                                        ).replace(0, np.nan)
+
+                                    else:
+
+                                        _games = pd.Series(np.nan, index=_team_player_display_base.index)
+
+
+                                    _rate_pairs = {
+
+                                        "points": "points_per_game",
+
+                                        "scoring_points": "scoring_points_per_game",
+
+                                        "one_point_goals": "one_point_goals_per_game",
+
+                                        "two_point_goals": "two_point_goals_per_game",
+
+                                        "goals": "goals_per_game",
+
+                                        "assists": "assists_per_game",
+
+                                        "shots": "shots_per_game",
+
+                                        "shots_on_goal": "shots_on_goal_per_game",
+
+                                        "ground_balls": "ground_balls_per_game",
+
+                                        "turnovers": "turnovers_per_game",
+
+                                        "caused_turnovers": "caused_turnovers_per_game",
+
+                                        "faceoffs_won": "faceoffs_won_per_game",
+
+                                        "faceoffs": "faceoffs_per_game",
+
+                                        "saves": "saves_per_game",
+
+                                        "scores_against": "scores_against_per_game",
+
+                                        "goals_against": "goals_against_per_game",
+
+                                        "touches": "touches_per_game",
+
+                                        "total_passes": "total_passes_per_game",
+
+                                    }
+
+
+                                    for _total_col, _rate_col in _rate_pairs.items():
+
+                                        if _total_col in _team_player_display_base.columns:
+
+                                            _team_player_display_base[_rate_col] = (
+
+                                                pd.to_numeric(_team_player_display_base[_total_col], errors="coerce") / _games
+
+                                            )
+
+
+                                    if "faceoffs_won" in _team_player_display_base.columns and "faceoffs" in _team_player_display_base.columns:
+
+                                        _team_player_display_base["faceoff_pct_calc"] = (
+
+                                            pd.to_numeric(_team_player_display_base["faceoffs_won"], errors="coerce")
+
+                                            / pd.to_numeric(_team_player_display_base["faceoffs"], errors="coerce").replace(0, np.nan)
+
+                                        )
+
+
+                                    if "saves" in _team_player_display_base.columns:
+
+                                        _saves = pd.to_numeric(_team_player_display_base["saves"], errors="coerce")
+
+
+                                        if "goals_against" in _team_player_display_base.columns:
+
+                                            _ga = pd.to_numeric(_team_player_display_base["goals_against"], errors="coerce")
+
+                                        elif "scores_against" in _team_player_display_base.columns:
+
+                                            _ga = pd.to_numeric(_team_player_display_base["scores_against"], errors="coerce")
+
+                                        else:
+
+                                            _ga = pd.Series(np.nan, index=_team_player_display_base.index)
+
+
+                                        _team_player_display_base["save_pct_calc"] = (
+
+                                            _saves / (_saves + _ga).replace(0, np.nan)
+
+                                        ).clip(lower=0, upper=1)
+
+
+                                if len(_team_player_display_base) == 0:
+
+                                    st.info("No players match the selected time frame.")
+
+                                else:
+
+                                    _position_options = (
+
+                                        sorted(_team_player_display_base["position"].dropna().astype(str).unique().tolist())
+
+                                        if "position" in _team_player_display_base.columns
+
+                                        else []
+
+                                    )
+
+
+                                    with _filter_cols[2]:
+
+                                        _selected_positions = st.multiselect(
+
+                                            "Positions",
+
+                                            options=_position_options,
+
+                                            default=[],
+
+                                            key=f"team_profile_player_positions_{_tp_team_id}"
+
+                                        )
+
+
+                                    with _filter_cols[3]:
+
+                                        _min_games_team_players = st.number_input(
+
+                                            "Min Games",
+
+                                            min_value=0,
+
+                                            max_value=100,
+
+                                            value=0,
+
+                                            step=1,
+
+                                            key=f"team_profile_player_min_games_{_tp_team_id}"
+
+                                        )
+
+
+                                    _sort_options = [
+
+                                        c for c in [
+
+                                            "points",
+
+                                            "points_per_game",
+
+                                            "scoring_points",
+
+                                            "scoring_points_per_game",
+
+                                            "one_point_goals",
+
+                                            "one_point_goals_per_game",
+
+                                            "two_point_goals",
+
+                                            "two_point_goals_per_game",
+
+                                            "goals",
+
+                                            "goals_per_game",
+
+                                            "assists",
+
+                                            "assists_per_game",
+
+                                            "shots",
+
+                                            "shots_per_game",
+
+                                            "shots_on_goal",
+
+                                            "shots_on_goal_per_game",
+
+                                            "touches",
+
+                                            "touches_per_game",
+
+                                            "ground_balls",
+
+                                            "ground_balls_per_game",
+
+                                            "caused_turnovers",
+
+                                            "caused_turnovers_per_game",
+
+                                            "turnovers",
+
+                                            "turnovers_per_game",
+
+                                            "faceoff_pct_calc",
+
+                                            "save_pct_calc",
+
+                                        ]
+
+                                        if c in _team_player_display_base.columns
+
+                                    ]
+
+
+                                    with _filter_cols[4]:
+
+                                        _team_player_sort_metric = st.selectbox(
+
+                                            "Sort By",
+
+                                            options=_sort_options,
+
+                                            index=0 if _sort_options else None,
+
+                                            format_func=pretty_col,
+
+                                            key=f"team_profile_player_sort_{_tp_team_id}"
+
+                                        )
+
+
+                                    _table_view = st.radio(
+
+                                        "Player Table View",
+
+                                        options=["Summary", "Per Game", "Specialists"],
+
+                                        horizontal=True,
+
+                                        key=f"team_profile_player_table_view_{_tp_team_id}"
+
+                                    )
+
+
+                                    _team_player_filtered = _team_player_display_base.copy()
+
+
+                                    if _selected_positions and "position" in _team_player_filtered.columns:
+
+                                        _team_player_filtered = _team_player_filtered[
+
+                                            _team_player_filtered["position"].astype(str).isin(_selected_positions)
+
+                                        ]
+
+
+                                    if "games" in _team_player_filtered.columns:
+
+                                        _team_player_filtered = _team_player_filtered[
+
+                                            pd.to_numeric(_team_player_filtered["games"], errors="coerce").fillna(0) >= _min_games_team_players
+
+                                        ]
+
+
+                                    if _team_player_sort_metric in _team_player_filtered.columns:
+
+                                        _team_player_filtered[_team_player_sort_metric] = pd.to_numeric(
+
+                                            _team_player_filtered[_team_player_sort_metric],
+
+                                            errors="coerce"
+
+                                        )
+
+
+                                        _sort_ascending = _team_player_sort_metric in {
+
+                                            "turnovers",
+
+                                            "turnovers_per_game",
+
+                                            "goals_against",
+
+                                            "goals_against_per_game",
+
+                                            "scores_against",
+
+                                            "scores_against_per_game",
+
+                                        }
+
+
+                                        _team_player_filtered = _team_player_filtered.sort_values(
+
+                                            _team_player_sort_metric,
+
+                                            ascending=_sort_ascending,
+
+                                            na_position="last"
+
+                                        )
+
+
+                                    _cards = st.columns(4)
+
+
+                                    with _cards[0]:
+
+                                        stat_card("Players", fmt_value(len(_team_player_filtered), 0))
+
+
+                                    with _cards[1]:
+
+                                        stat_card("Team", str(_tp_selected_team or _tp_team_id))
+
+
+                                    with _cards[2]:
+
+                                        stat_card("Time Frame", _team_player_context_label)
+
+
+                                    with _cards[3]:
+
+                                        _top_player_name = (
+
+                                            _team_player_filtered["full_name"].iloc[0]
+
+                                            if len(_team_player_filtered) and "full_name" in _team_player_filtered.columns
+
+                                            else "—"
+
+                                        )
+
+                                        stat_card("Top Player", _top_player_name)
+
+
+                                    if _table_view == "Summary":
+
+                                        _display_cols = [
+
+                                            "season",
+
+                                            "full_name",
+
+                                            "position",
+
+                                            "games",
+
+                                            "points",
+
+                                            "scoring_points",
+
+                                            "one_point_goals",
+
+                                            "two_point_goals",
+
+                                            "goals",
+
+                                            "assists",
+
+                                            "shots",
+
+                                            "shots_on_goal",
+
+                                            "ground_balls",
+
+                                            "turnovers",
+
+                                            "caused_turnovers",
+
+                                            "touches",
+
+                                        ]
+
+                                    elif _table_view == "Per Game":
+
+                                        _display_cols = [
+
+                                            "season",
+
+                                            "full_name",
+
+                                            "position",
+
+                                            "games",
+
+                                            "points_per_game",
+
+                                            "scoring_points_per_game",
+
+                                            "one_point_goals_per_game",
+
+                                            "two_point_goals_per_game",
+
+                                            "goals_per_game",
+
+                                            "assists_per_game",
+
+                                            "shots_per_game",
+
+                                            "shots_on_goal_per_game",
+
+                                            "ground_balls_per_game",
+
+                                            "turnovers_per_game",
+
+                                            "caused_turnovers_per_game",
+
+                                            "touches_per_game",
+
+                                            "total_passes_per_game",
+
+                                        ]
+
+                                    else:
+
+                                        _display_cols = [
+
+                                            "season",
+
+                                            "full_name",
+
+                                            "position",
+
+                                            "position_name",
+
+                                            "games",
+
+                                            "points",
+
+                                            "scoring_points",
+
+                                            "one_point_goals",
+
+                                            "two_point_goals",
+
+                                            "goals",
+
+                                            "assists",
+
+                                            "shots",
+
+                                            "shots_on_goal",
+
+                                            "two_point_shots",
+
+                                            "shot_pct_calc",
+
+                                            "shots_on_goal_rate_calc",
+
+                                            "ground_balls",
+
+                                            "turnovers",
+
+                                            "caused_turnovers",
+
+                                            "faceoffs_won",
+
+                                            "faceoffs_lost",
+
+                                            "faceoffs",
+
+                                            "faceoff_pct_calc",
+
+                                            "saves",
+
+                                            "scores_against",
+
+                                            "goals_against",
+
+                                            "save_pct_calc",
+
+                                            "touches",
+
+                                            "total_passes",
+
+                                        ]
+
+
+                                    _display_cols = [
+
+                                        c for c in _display_cols
+
+                                        if c in _team_player_filtered.columns
+
+                                    ]
+
+
+                                    if (
+
+                                        len(_team_player_filtered) > 0
+
+                                        and _team_player_sort_metric in _team_player_filtered.columns
+
+                                        and "full_name" in _team_player_filtered.columns
+
+                                    ):
+
+                                        _chart_df = _team_player_filtered.head(15).copy()
+
+
+                                        safe_bar_chart(
+
+                                            _chart_df.sort_values(_team_player_sort_metric, ascending=True),
+
+                                            x_col="full_name",
+
+                                            y_col=_team_player_sort_metric,
+
+                                            color_col="position" if "position" in _chart_df.columns else None,
+
+                                            title=f"{_tp_selected_team or _tp_team_id} — {_team_player_context_label} Player Leaders by {pretty_col(_team_player_sort_metric)}",
+
+                                            orientation="h"
+
+                                        )
+
+
+                                    display_table(
+
+                                        _team_player_filtered[_display_cols],
+
+                                        height=430,
+
+                                        hide_cols=[],
+
+                                        max_cols=None
+
+                                    )
+
+
+                                    with st.expander("Full player table", expanded=False):
+
+                                        display_table(
+
+                                            _team_player_filtered,
+
+                                            height=430,
+
+                                            hide_cols=[],
+
+                                            max_cols=None
+
+                                        )
+
+
+                                    download_csv(
+
+                                        _team_player_filtered,
+
+                                        f"{str(_tp_selected_team or _tp_team_id).replace(' ', '_').lower()}_{str(_team_player_context_label).replace(' ', '_').lower()}_player_totals.csv",
+
+                                        label="Download team player totals CSV"
+
+                                    )
 
         # <<< PLL_TEAM_PROFILE_ROSTER_TOTALS_END
 
@@ -5239,11 +6038,10 @@ with tab_team_compare:
             ]
 
             if defense_chart_options:
-                _def_chart_default_idx = defense_chart_options.index("scores_allowed_per_game") if "scores_allowed_per_game" in defense_chart_options else 0
                 defense_chart_metric = st.selectbox(
                     "Defensive chart metric",
                     options=defense_chart_options,
-                    index=_def_chart_default_idx,
+                    index=1 if "scores_allowed_per_game" in defense_chart_options else 0,
                     format_func=pretty_col,
                     key="team_compare_defense_chart_metric"
                 )
@@ -5264,12 +6062,10 @@ with tab_team_compare:
 
         st.markdown("### Visual Comparison")
 
-        _team_chart_options = [m for m in team_compare_metrics if m in compare_df.columns]
-        _team_chart_default_idx = _team_chart_options.index("scores_per_game") if "scores_per_game" in _team_chart_options else 0
         chart_metric = st.selectbox(
             "Chart metric",
-            options=_team_chart_options,
-            index=_team_chart_default_idx,
+            options=[m for m in team_compare_metrics if m in compare_df.columns],
+            index=5 if "scores_per_game" in compare_df.columns else 0,
             format_func=pretty_col,
             key="team_compare_chart_metric"
         )
