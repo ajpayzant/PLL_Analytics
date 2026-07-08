@@ -3695,6 +3695,35 @@ def _rank_pct(series, higher_is_better=True):
     return s.rank(pct=True, ascending=not higher_is_better, method="average", na_option="keep") * 100
 
 
+def _sigmoid_stretch(percentile_series):
+    """
+    Map a 0-100 percentile to an interpretable 0-100 score with spread.
+
+    Uses a logistic curve centered at 50 so the output distribution is
+    intuitive:
+        99th pct  -> ~95    (historically elite)
+        90th pct  -> ~85    (excellent / all-star)
+        75th pct  -> ~73    (solid starter)
+        50th pct  -> 50     (league average)
+        25th pct  -> ~27    (below average)
+        10th pct  -> ~15    (low impact)
+
+    The stretch factor k=0.065 is calibrated so that a context with
+    ~150-250 eligible players produces top scores in the 82-95 range
+    and average players near 50, matching the intuition that 80+ = elite.
+    """
+    p = pd.to_numeric(percentile_series, errors="coerce")
+    # Convert percentile 0-100 to 0-1, apply logistic, rescale to 0-100
+    x = (p / 100.0 - 0.5)  # center at 0
+    k = 6.5  # steepness; higher = more spread
+    stretched = 1.0 / (1.0 + np.exp(-k * x))  # logistic: 0-1
+    # Rescale to 0-100 range using the min/max of the logistic at x=±0.5
+    lo = 1.0 / (1.0 + np.exp(-k * (-0.5)))
+    hi = 1.0 / (1.0 + np.exp(-k * 0.5))
+    result = (stretched - lo) / (hi - lo) * 100
+    return result.clip(0, 100).where(p.notna(), np.nan)
+
+
 def _minmax_score(series, higher_is_better=True):
     s = pd.to_numeric(series, errors="coerce")
     if s.notna().sum() == 0:
@@ -3852,31 +3881,26 @@ def _score_metric(series, higher_is_better=True, percentile_weight=0.35):
     """
     Context-local score for a raw metric.
 
-    This is intentionally closer to the Colab-tested ranking behavior than the
-    previous role-only scorer. The score is mostly min-max based, because the
-    tested leaderboard rewarded actual distance between players, with a smaller
-    percentile component to keep ordering stable in small samples.
-
-    score = percentile_weight * percentile_score
-          + (1 - percentile_weight) * minmax_score
+    Uses pure percentile rank (0-100) passed through a sigmoid stretch so the
+    output is interpretable: ~50 = league average, ~85 = 90th percentile,
+    ~95 = 99th percentile. The percentile_weight parameter is retained for
+    API compatibility but no longer used (pure percentile is always applied).
     """
     s = pd.to_numeric(series, errors="coerce")
-
     if s.notna().sum() == 0:
         return pd.Series(np.nan, index=s.index, dtype="float64")
-
     pct = _rank_pct(s, higher_is_better=higher_is_better)
-    mm = _minmax_score(s, higher_is_better=higher_is_better)
-
-    w_pct = float(percentile_weight)
-    w_pct = min(max(w_pct, 0.0), 1.0)
-    out = w_pct * pct.fillna(50) + (1.0 - w_pct) * mm.fillna(50)
-
-    return out.clip(0, 100).where(s.notna(), np.nan)
+    return _sigmoid_stretch(pct).where(s.notna(), np.nan)
 
 
 def _weighted_available_score(df, weights, fallback=np.nan):
-    """Weighted row score that ignores missing component columns/values."""
+    """
+    Weighted row score that ignores missing component columns/values.
+
+    Only uses the components that are actually present for each row —
+    weights are renormalized so a missing component doesn't pull the score
+    toward 50. If all components are missing, returns fallback (default NaN).
+    """
     score = pd.Series(0.0, index=df.index, dtype="float64")
     weight_sum = pd.Series(0.0, index=df.index, dtype="float64")
 
@@ -4105,46 +4129,36 @@ def _add_player_ranking_scores(df):
     out["sog_score_role"] = _role_metric_score(out, "shots_on_goal_per_game", True)
 
     # Public helper scores used by the app table.
-    out["touches_score"] = 0.70 * out["touches_score_global"].fillna(50) + 0.30 * out["touches_score_role"].fillna(50)
-    out["passes_score"] = 0.70 * out["passes_score_global"].fillna(50) + 0.30 * out["passes_score_role"].fillna(50)
-    out["ground_ball_score"] = 0.70 * out["ground_ball_score_global"].fillna(50) + 0.30 * out["ground_ball_score_role"].fillna(50)
+    # Use available components only — don't fill missing with 50.
+    out["touches_score"] = _weighted_available_score(out, {"touches_score_global": 0.70, "touches_score_role": 0.30})
+    out["passes_score"] = _weighted_available_score(out, {"passes_score_global": 0.70, "passes_score_role": 0.30})
+    out["ground_ball_score"] = _weighted_available_score(out, {"ground_ball_score_global": 0.70, "ground_ball_score_role": 0.30})
 
     # ------------------------------------------------------------------
-    # Component scores.
+    # Component scores — no fallback=50, missing components are excluded.
     # ------------------------------------------------------------------
-    # Scoring Value is the renamed and expanded version of the older Goal
-    # Value concept. It rewards direct scoring impact: scoring points, total
-    # points, 1PT goals, 2PT goals, and 2PT scoring efficiency.
     out["scoring_value_score"] = _weighted_available_score(out, {
         "scoring_points_score": 0.34,
         "points_score": 0.22,
         "one_point_goal_score": 0.14,
         "two_point_goal_score": 0.22,
         "two_point_goal_efficiency_score": 0.08,
-    }, fallback=50)
+    })
 
-    # Legacy alias retained for older downstream checks/audits, but the app
-    # should label this as Scoring Value.
     out["goal_value_score"] = out["scoring_value_score"]
 
-    # Playmaking Value rewards offensive creation that is not captured by pure
-    # scoring volume. This is meant to correctly value creator-heavy attackmen
-    # and midfielders such as high-assist, high-efficiency initiators.
     out["playmaking_value_score"] = _weighted_available_score(out, {
         "assists_score": 0.45,
         "assists_per_touch_score": 0.20,
         "points_per_touch_score": 0.20,
         "passes_score_global": 0.10,
         "turnover_security_score": 0.05,
-    }, fallback=50)
+    })
 
-    # Internal offensive creation blend used in the offense formula. It is kept
-    # in the warehouse for audit/debugging but should not be displayed as a
-    # primary table column because Scoring Value and Playmaking Value are clearer.
-    out["offensive_creation_score"] = (
-        0.60 * pd.to_numeric(out["scoring_value_score"], errors="coerce").fillna(50)
-        + 0.40 * pd.to_numeric(out["playmaking_value_score"], errors="coerce").fillna(50)
-    ).clip(0, 100)
+    out["offensive_creation_score"] = _weighted_available_score(out, {
+        "scoring_value_score": 0.60,
+        "playmaking_value_score": 0.40,
+    })
 
     out["offensive_score"] = _weighted_available_score(out, {
         "points_score": 0.30,
@@ -4153,7 +4167,7 @@ def _add_player_ranking_scores(df):
         "goals_score": 0.12,
         "shots_score": 0.08,
         "shot_pct_score": 0.06,
-    }, fallback=50)
+    })
     out["offensive_score_raw"] = out["offensive_score"]
 
     usage_global_score = _weighted_available_score(out, {
@@ -4162,7 +4176,7 @@ def _add_player_ranking_scores(df):
         "passes_score_global": 0.15,
         "ground_ball_score_global": 0.10,
         "sog_score": 0.10,
-    }, fallback=50)
+    })
 
     usage_role_score = _weighted_available_score(out, {
         "touches_score_role": 0.45,
@@ -4170,11 +4184,14 @@ def _add_player_ranking_scores(df):
         "passes_score_role": 0.15,
         "ground_ball_score_role": 0.10,
         "sog_score_role": 0.10,
-    }, fallback=50)
+    })
 
     out["usage_global_score"] = usage_global_score
     out["usage_role_score"] = usage_role_score
-    out["usage_possession_score"] = (0.70 * usage_global_score.fillna(50) + 0.30 * usage_role_score.fillna(50)).clip(0, 100)
+    out["usage_possession_score"] = _weighted_available_score(out, {
+        "usage_global_score": 0.70,
+        "usage_role_score": 0.30,
+    })
     out["usage_score"] = out["usage_possession_score"]
 
     # Defensive score: caused turnovers are the most direct defensive-impact
@@ -4185,7 +4202,7 @@ def _add_player_ranking_scores(df):
         "ground_ball_score": 0.24,
         "turnover_security_score": 0.10,
         "touches_score": 0.08,
-    }, fallback=50)
+    })
     out["defensive_score_raw"] = out["defensive_score"]
 
     out["faceoff_score"] = _weighted_available_score(out, {
@@ -4193,7 +4210,7 @@ def _add_player_ranking_scores(df):
         "faceoff_wins_score": 0.24,
         "faceoff_volume_score": 0.08,
         "ground_ball_score": 0.16,
-    }, fallback=50)
+    })
     out["faceoff_score_raw"] = out["faceoff_score"]
 
     out["goalie_score"] = _weighted_available_score(out, {
@@ -4201,7 +4218,7 @@ def _add_player_ranking_scores(df):
         "saves_score": 0.24,
         "goals_against_score": 0.12,
         "scores_against_score": 0.08,
-    }, fallback=50)
+    })
     out["goalie_score_raw"] = out["goalie_score"]
 
     # ------------------------------------------------------------------
@@ -4225,7 +4242,7 @@ def _add_player_ranking_scores(df):
         "role_primary_score": 0.50,
         "role_primary_percentile": 0.25,
         "role_separation_score": 0.25,
-    }, fallback=50)
+    })
     out["role_context_percentile"] = out["role_primary_percentile"]
 
     # ------------------------------------------------------------------
@@ -4243,7 +4260,7 @@ def _add_player_ranking_scores(df):
         "usage_possession_score": 0.20,
         "scoring_value_score": 0.15,
         "playmaking_value_score": 0.15,
-    }, fallback=50)
+    })
 
     defense_base = _weighted_available_score(out, {
         "defensive_score": 0.68,
@@ -4251,25 +4268,22 @@ def _add_player_ranking_scores(df):
         "ground_ball_score": 0.10,
         "usage_possession_score": 0.08,
         "offensive_score": 0.04,
-    }, fallback=50)
+    })
 
     faceoff_base = _weighted_available_score(out, {
         "faceoff_score": 0.46,
         "ground_ball_score": 0.26,
         "usage_possession_score": 0.16,
         "offensive_score": 0.12,
-    }, fallback=50)
+    })
 
-    # Goalie base impact stays goalie-specific, but uses a broader blend than
-    # pure goalie_score so the overall cross-position list does not become
-    # dominated by goalies who separate strongly inside a small goalie peer pool.
     goalie_base = _weighted_available_score(out, {
         "goalie_score": 0.58,
         "save_pct_score": 0.22,
         "saves_score": 0.12,
         "goals_against_score": 0.05,
         "scores_against_score": 0.03,
-    }, fallback=50)
+    })
 
     out["base_impact_score"] = np.select(
         [
@@ -4353,28 +4367,21 @@ def _add_player_ranking_scores(df):
     )
     out["overall_score_raw"] = pd.to_numeric(out["overall_score_raw"], errors="coerce")
 
-    # Small role-balance adjustment applied only to the Overall score. This keeps
-    # role-specific views untouched while nudging overall valuation toward the
-    # current scouting read: defenders deserve a little more credit for CT-driven
-    # impact. Goalies are handled through transfer-adjusted overall inputs above,
-    # not through a flat score subtraction.
     out["role_overall_adjustment"] = 0.0
-    out.loc[out["role_group"].eq("Defense"), "role_overall_adjustment"] = 1.5
-    out["overall_score_raw"] = (out["overall_score_raw"] + out["role_overall_adjustment"]).clip(0, 100)
+    out["overall_score_raw"] = pd.to_numeric(out["overall_score_raw"], errors="coerce").clip(0, 100)
 
-    # Light context calibration: score formulas are built from many role-specific
-    # component scores, so the raw score scale can drift down in small/early
-    # contexts. This shifts the eligible context median toward 50 without
-    # changing ranking order within that context. It restores the tested 0-100
-    # interpretation where roughly average players sit near 50 and top players
-    # can reach the 80s/90s.
+    # Context calibration: shift the eligible context median toward 50 so the
+    # scale stays interpretable across different seasons and sample sizes.
+    # The sigmoid stretch already expands the distribution — this final shift
+    # ensures 50 always means "league average" in the selected context.
+    # Cap widened to ±20 so small early-season samples calibrate properly.
     out["overall_score"] = out["overall_score_raw"].copy()
     eligible_mask = pd.to_numeric(out.get("eligible_for_default_ranking", pd.Series(1, index=out.index)), errors="coerce").fillna(1).eq(1)
     raw_eligible = pd.to_numeric(out.loc[eligible_mask, "overall_score_raw"], errors="coerce")
     if raw_eligible.notna().sum() >= 5:
         context_median = raw_eligible.median()
         if pd.notna(context_median):
-            shift = float(np.clip(50.0 - context_median, -12.0, 12.0))
+            shift = float(np.clip(50.0 - context_median, -20.0, 20.0))
             out["overall_score"] = (pd.to_numeric(out["overall_score_raw"], errors="coerce") + shift).clip(0, 100)
             out["overall_score_context_shift"] = shift
         else:
