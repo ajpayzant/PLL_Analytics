@@ -3701,21 +3701,20 @@ def _sigmoid_stretch(percentile_series):
 
     Uses a logistic curve centered at 50 so the output distribution is
     intuitive:
-        99th pct  -> ~95    (historically elite)
-        90th pct  -> ~86    (excellent / all-star)
-        75th pct  -> ~73    (solid starter)
+        99th pct  -> ~99    (historically elite)
+        90th pct  -> ~92    (excellent / all-star)
+        75th pct  -> ~77    (solid starter)
         50th pct  -> 50     (league average)
-        25th pct  -> ~27    (below average)
-        10th pct  -> ~14    (low impact)
+        25th pct  -> ~23    (below average)
+        10th pct  -> ~8     (low impact)
 
-    k=4.0 is calibrated so that a context with ~150-250 eligible players
-    produces top overall scores in the 82-92 range and average players
-    near 50. k=6.5 was too steep — it pushed 25th pct players below 14
-    and made most of the roster look terrible.
+    k=2.5 gives the best balance: top players reach the high 80s/low 90s
+    in overall score while average players sit near 50 and below-average
+    players score in the 20s-30s (still readable, not crushingly low).
     """
     p = pd.to_numeric(percentile_series, errors="coerce")
     x = (p / 100.0 - 0.5)
-    k = 4.0
+    k = 2.5
     stretched = 1.0 / (1.0 + np.exp(-k * x))
     lo = 1.0 / (1.0 + np.exp(-k * (-0.5)))
     hi = 1.0 / (1.0 + np.exp(-k * 0.5))
