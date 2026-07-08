@@ -3836,12 +3836,14 @@ def _ranking_context_min_games(context_type, max_games):
     if context_type in {"Last 5", "Last 10"}:
         return 1
     if context_type == "Career":
-        return 5 if max_games >= 5 else 1
-    if max_games <= 2:
-        return 1
-    if max_games <= 5:
+        return 5 if max_games >= 5 else 2
+    if max_games <= 3:
         return 2
-    return 3
+    if max_games <= 6:
+        return 3
+    if max_games <= 10:
+        return 4
+    return 5
 
 
 
@@ -4307,11 +4309,32 @@ def _add_player_ranking_scores(df):
     out["goalie_save_pct_for_overall"] = out["save_pct_score"].copy()
     out["goalie_saves_for_overall"] = out["saves_score"].copy()
 
+    # Scale transfer compression by sample size: specialists ranked within a
+    # small peer pool (8-10 goalies, 5-8 FO players) should not dominate the
+    # cross-role Overall ranking in early season. At 6+ games the factors
+    # relax toward the calibrated full-season values.
+    max_games_in_ctx = float(out["games"].max()) if len(out) else 0
+    sample_factor = float(np.clip(max_games_in_ctx / 10.0, 0.15, 1.0))
+
+    goalie_base_factor    = 0.55 + 0.19 * sample_factor   # 0.55 early → 0.74 full
+    goalie_ctx_factor     = 0.30 + 0.20 * sample_factor   # 0.30 early → 0.50 full
+    goalie_savepct_factor = 0.45 + 0.25 * sample_factor   # 0.45 early → 0.70 full
+    goalie_saves_factor   = 0.45 + 0.25 * sample_factor   # 0.45 early → 0.70 full
+
+    # FO specialists: compress role context more in small samples
+    fo_ctx_factor = 0.45 + 0.15 * sample_factor           # 0.45 early → 0.60 full
+
     goalie_mask = out["role_group"].eq("Goalie")
-    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "base_impact_score"], 0.74)
-    out.loc[goalie_mask, "goalie_role_context_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "role_context_value_score"], 0.50)
-    out.loc[goalie_mask, "goalie_save_pct_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "save_pct_score"], 0.70)
-    out.loc[goalie_mask, "goalie_saves_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "saves_score"], 0.70)
+    fo_mask = out["role_group"].eq("Faceoff")
+
+    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "base_impact_score"], goalie_base_factor)
+    out.loc[goalie_mask, "goalie_role_context_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "role_context_value_score"], goalie_ctx_factor)
+    out.loc[goalie_mask, "goalie_save_pct_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "save_pct_score"], goalie_savepct_factor)
+    out.loc[goalie_mask, "goalie_saves_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "saves_score"], goalie_saves_factor)
+
+    # FO role context: apply sample-scaled compression for overall ranking
+    out["fo_role_context_for_overall"] = out["role_context_value_score"].copy()
+    out.loc[fo_mask, "fo_role_context_for_overall"] = _transfer_toward_average(out.loc[fo_mask, "role_context_value_score"], fo_ctx_factor)
 
     out["overall_score_raw"] = np.select(
         [
@@ -4323,7 +4346,7 @@ def _add_player_ranking_scores(df):
         [
             0.60 * out["base_impact_score"] + 0.20 * out["role_context_value_score"] + 0.10 * out["usage_possession_score"] + 0.10 * out["offensive_creation_score"],
             0.58 * out["base_impact_score"] + 0.34 * out["role_context_value_score"] + 0.08 * out["usage_possession_score"],
-            0.74 * out["base_impact_score"] + 0.14 * out["role_context_value_score"] + 0.07 * out["ground_ball_score"] + 0.05 * out["usage_possession_score"],
+            0.74 * out["base_impact_score"] + 0.14 * out["fo_role_context_for_overall"] + 0.07 * out["ground_ball_score"] + 0.05 * out["usage_possession_score"],
             0.72 * out["goalie_base_for_overall"] + 0.12 * out["goalie_role_context_for_overall"] + 0.10 * out["goalie_save_pct_for_overall"] + 0.06 * out["goalie_saves_for_overall"],
         ],
         default=out["base_impact_score"],
