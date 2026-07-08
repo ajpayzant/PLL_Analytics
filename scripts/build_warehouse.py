@@ -4090,51 +4090,63 @@ def _add_player_ranking_scores(df):
     )
 
     # ------------------------------------------------------------------
-    # Context-global component scores. These are closest to the original
-    # tested score scale because every player in the selected context is scored
-    # against the same context distribution.
+    # Component scores.
+    #
+    # KEY DESIGN PRINCIPLE: role-primary metrics are scored within each
+    # role group, not globally. Scoring a defender's CT rate against all
+    # 200 players (most of whom have 0 CTs) inflates defender scores
+    # artificially. An SSDM at the 97th pct globally on CTs is not more
+    # valuable than an attacker at the 90th pct globally on points —
+    # but global scoring made it look that way.
+    #
+    # Global scoring is used only for usage/touches (all players compete
+    # for possession time and ground balls across role lines).
     # ------------------------------------------------------------------
-    out["points_score"] = _score_metric(out["points_per_game"], True)
-    out["scoring_points_score"] = _score_metric(out["scoring_points_per_game"], True)
-    out["one_point_goal_score"] = _score_metric(out["one_point_goals_per_game"], True)
-    out["two_point_goal_score"] = _score_metric(out["two_point_goals_per_game"], True)
-    out["goals_score"] = _score_metric(out["goals_per_game"], True)
-    out["assists_score"] = _score_metric(out["assists_per_game"], True)
-    out["shots_score"] = _score_metric(out["shots_per_game"], True)
-    out["sog_score"] = _score_metric(out["shots_on_goal_per_game"], True)
-    out["shot_pct_score"] = _score_metric(out["shot_pct_calc"], True)
+
+    # Global usage/possession metrics — these are legitimately cross-role
     out["touches_score_global"] = _score_metric(out["touches_per_game"], True)
     out["passes_score_global"] = _score_metric(out["total_passes_per_game"], True)
     out["ground_ball_score_global"] = _score_metric(out["ground_balls_per_game"], True)
-    out["ct_score"] = _score_metric(out["caused_turnovers_per_game"], True)
     out["turnover_security_score"] = _score_metric(out["turnovers_per_touch"], False)
-    out["faceoff_pct_score"] = _score_metric(out["faceoff_pct_for_ranking"], True)
-    out["faceoff_volume_score"] = _score_metric(out["faceoffs_per_game"], True)
-    out["faceoff_wins_score"] = _score_metric(out["faceoffs_won_per_game"], True)
-    out["save_pct_score"] = _score_metric(out["save_pct_for_ranking"], True)
-    out["saves_score"] = _score_metric(out["saves_per_game"], True)
-    out["goals_against_score"] = _score_metric(out["goals_against_per_game"], False)
-    out["scores_against_score"] = _score_metric(out["scores_against_per_game"], False)
-    out["two_point_goal_efficiency_score"] = _score_metric(out["two_point_goal_pct_calc"], True)
-    out["points_per_touch_score"] = _score_metric(out["points_per_touch"], True)
-    out["assists_per_touch_score"] = _score_metric(out["assists_per_touch"], True)
 
-    # Secondary role-peer usage scores. These are blended into usage only; they
-    # do not replace the global usage baseline that matched testing better.
+    # Role-peer scores — each metric scored within role group only
+    out["points_score"] = _role_metric_score(out, "points_per_game", True)
+    out["scoring_points_score"] = _role_metric_score(out, "scoring_points_per_game", True)
+    out["one_point_goal_score"] = _role_metric_score(out, "one_point_goals_per_game", True)
+    out["two_point_goal_score"] = _role_metric_score(out, "two_point_goals_per_game", True)
+    out["goals_score"] = _role_metric_score(out, "goals_per_game", True)
+    out["assists_score"] = _role_metric_score(out, "assists_per_game", True)
+    out["shots_score"] = _role_metric_score(out, "shots_per_game", True)
+    out["sog_score"] = _role_metric_score(out, "shots_on_goal_per_game", True)
+    out["shot_pct_score"] = _role_metric_score(out, "shot_pct_calc", True)
+    out["ct_score"] = _role_metric_score(out, "caused_turnovers_per_game", True)
+    out["two_point_goal_efficiency_score"] = _role_metric_score(out, "two_point_goal_pct_calc", True)
+    out["points_per_touch_score"] = _role_metric_score(out, "points_per_touch", True)
+    out["assists_per_touch_score"] = _role_metric_score(out, "assists_per_touch", True)
+
+    # Specialist metrics — only meaningful within their own role group
+    out["faceoff_pct_score"] = _role_metric_score(out, "faceoff_pct_for_ranking", True)
+    out["faceoff_volume_score"] = _role_metric_score(out, "faceoffs_per_game", True)
+    out["faceoff_wins_score"] = _role_metric_score(out, "faceoffs_won_per_game", True)
+    out["save_pct_score"] = _role_metric_score(out, "save_pct_for_ranking", True)
+    out["saves_score"] = _role_metric_score(out, "saves_per_game", True)
+    out["goals_against_score"] = _role_metric_score(out, "goals_against_per_game", False)
+    out["scores_against_score"] = _role_metric_score(out, "scores_against_per_game", False)
+
+    # Role-peer usage for blending
     out["touches_score_role"] = _role_metric_score(out, "touches_per_game", True)
     out["shots_score_role"] = _role_metric_score(out, "shots_per_game", True)
     out["passes_score_role"] = _role_metric_score(out, "total_passes_per_game", True)
     out["ground_ball_score_role"] = _role_metric_score(out, "ground_balls_per_game", True)
     out["sog_score_role"] = _role_metric_score(out, "shots_on_goal_per_game", True)
 
-    # Public helper scores used by the app table.
-    # Use available components only — don't fill missing with 50.
+    # Public helper scores
     out["touches_score"] = _weighted_available_score(out, {"touches_score_global": 0.70, "touches_score_role": 0.30})
     out["passes_score"] = _weighted_available_score(out, {"passes_score_global": 0.70, "passes_score_role": 0.30})
     out["ground_ball_score"] = _weighted_available_score(out, {"ground_ball_score_global": 0.70, "ground_ball_score_role": 0.30})
 
     # ------------------------------------------------------------------
-    # Component scores — no fallback=50, missing components are excluded.
+    # Composite scores — built from role-peer component scores above
     # ------------------------------------------------------------------
     out["scoring_value_score"] = _weighted_available_score(out, {
         "scoring_points_score": 0.34,
@@ -4169,12 +4181,15 @@ def _add_player_ranking_scores(df):
     })
     out["offensive_score_raw"] = out["offensive_score"]
 
+    # Usage: blend global (how much possession vs all players) with
+    # role-peer (how much vs role peers) to keep offensive players
+    # from being penalized for lower touches than defenders/FO
     usage_global_score = _weighted_available_score(out, {
         "touches_score_global": 0.45,
-        "shots_score": 0.20,
+        "shots_score_role": 0.20,
         "passes_score_global": 0.15,
         "ground_ball_score_global": 0.10,
-        "sog_score": 0.10,
+        "sog_score_role": 0.10,
     })
 
     usage_role_score = _weighted_available_score(out, {
@@ -4193,9 +4208,7 @@ def _add_player_ranking_scores(df):
     })
     out["usage_score"] = out["usage_possession_score"]
 
-    # Defensive score: caused turnovers are the most direct defensive-impact
-    # event available in the PLL box data, so this version leans more heavily
-    # into CT creation instead of letting ground balls dominate defender value.
+    # Defensive score: CT and GB scored within defensive role group only
     out["defensive_score"] = _weighted_available_score(out, {
         "ct_score": 0.58,
         "ground_ball_score": 0.24,
