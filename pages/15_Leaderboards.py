@@ -89,11 +89,13 @@ if leader_section == "Player Leaders":
             "goals", "goals_per_game",
             "one_point_goals", "two_point_goals",
             "assists", "assists_per_game",
+            "assist_opportunities", "assist_conv_rate",
+            "two_pt_conversion",
             "shots", "shots_per_game",
             "ground_balls", "ground_balls_per_game",
             "caused_turnovers", "caused_turnovers_per_game",
             "turnovers", "turnovers_per_game",
-            "saves", "save_pct_calc",
+            "saves", "save_pct_calc", "clean_save_pct",
             "faceoffs_won", "faceoff_pct_calc",
             "touches", "touches_per_game",
         ]
@@ -137,9 +139,11 @@ if leader_section == "Player Leaders":
             "season", "split_type", "full_name", "position", "teams", "games",
             "points", "points_per_game", "scoring_points", "scoring_points_per_game",
             "one_point_goals", "two_point_goals", "goals", "goals_per_game",
-            "assists", "assists_per_game", "shots", "shots_per_game",
+            "assists", "assists_per_game", "assist_opportunities", "assist_conv_rate",
+            "two_pt_conversion", "shots", "shots_per_game",
             "ground_balls", "ground_balls_per_game", "turnovers", "turnovers_per_game",
-            "caused_turnovers", "caused_turnovers_per_game", "saves", "faceoffs_won",
+            "caused_turnovers", "caused_turnovers_per_game",
+            "saves", "clean_save_pct", "faceoffs_won",
             "faceoff_pct_calc", "touches", "touches_per_game", "total_passes"
         ]
         if c in player_cols_available

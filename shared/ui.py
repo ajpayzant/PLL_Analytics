@@ -374,6 +374,24 @@ COL_LABELS = {
     "style_summary": "Style Summary",
     "points_per_touch": "Pts/Touch",
     "goals_per_shot": "Goals/Shot",
+    # Phase 2 new derived metrics
+    "assist_conv_rate": "Assist Conv %",
+    "assist_opp_per_game": "Assist Opp/G",
+    "assist_opportunities": "Assist Opp",
+    "two_pt_conversion": "2PT Conv %",
+    "clean_save_rate": "Clean Save %",
+    "clean_save_pct": "Clean Save%",
+    "clean_save_rate_score": "Clean Save Score",
+    "assist_conv_score": "Assist Conv Score",
+    "two_pt_conv_score": "2PT Conv Score",
+    # Phase 2 RPS component scores
+    "offense_rps": "Offense Score",
+    "defense_rps": "Defense Score",
+    "faceoff_rps": "Faceoff Score",
+    "goalie_rps": "Goalie Score",
+    "peer_standing_score": "Peer Standing",
+    "cross_role_impact": "Cross-Role Impact",
+    "pss": "Peer Standing",
 }
 
 

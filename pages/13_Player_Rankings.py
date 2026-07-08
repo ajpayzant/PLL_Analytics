@@ -573,25 +573,32 @@ else:
     with st.expander("Ranking Method", expanded=False):
         st.markdown(
             """
-            **Role Context Value** combines:
-            - **50% Role Score**
-            - **25% Role Percentile**
-            - **25% Peer Separation Score**
+            ### 3-Component Ranking Architecture
 
-            **Peer Separation Score** uses IQR-based robust z-score distance from the role-group median and shrinks toward average when the role group sample is small.
+            Each player's **Overall Score** is built from three clean components:
 
-            **Usage Score** blends leaguewide usage value with role-peer usage value so primary offensive players are not understated and specialists are not artificially inflated.
+            **1. Role Performance Score (RPS)** — how well you do your specific job
+            - *Offense:* Points production, creation efficiency, assist conversion rate, shot quality, 2PT conversion
+            - *Defense:* Caused turnovers, ground balls, ball security
+            - *Faceoff:* Win %, total wins, volume
+            - *Goalie:* Clean save rate (skill-based stops), overall save %, volume, outcomes
 
-            **Overall Score**
-            - **Offense:** 60% Base Impact + 20% Role Context + 10% Usage + 10% Offensive Creation
-            - **Offensive Creation:** 60% Scoring Value + 40% Playmaking Value
-            - **Defense:** 58% Base Impact + 34% Role Context + 8% Usage, with defensive impact driven more heavily by caused turnovers
-            - **Faceoff:** 74% Base Impact + 14% Role Context + 7% Ground-Ball Value + 5% Usage
-            - **Goalie:** 72% transfer-adjusted Base Impact + 12% transfer-adjusted Role Context + 10% transfer-adjusted Save Percentage + 6% transfer-adjusted Save Volume
+            **2. Peer Standing Score (PSS)** — where you rank among your role peers
+            - Your RPS rank within your role group, passed through a sigmoid curve so 50 = role average, 85+ = top 10%
+            - Uses IQR-based robust z-scoring so small samples don't distort peer separation
 
-            **Goalie Transfer Adjustment** compresses goalie-only value toward the league-average baseline for the all-player Overall view. This is not a flat penalty: the dedicated Goalie view still uses full goalie-specific value, while Overall prevents a smaller goalie peer pool from dominating cross-position rankings.
+            **3. Cross-Role Impact Score (CIS)** — contributions that transcend your position
+            - Ground balls, possession/usage, ball security — scored globally across all roles
 
-            **Score Scale Calibration** shifts each context slightly toward an average-player baseline near 50 without changing rank order inside that context.
+            **Overall Score weights by role:**
+            - *Offense:* 60% RPS + 25% PSS + 15% CIS
+            - *Defense:* 65% RPS + 25% PSS + 10% CIS
+            - *Faceoff:* 65% RPS + 25% PSS + 10% CIS
+            - *Goalie:* 70% RPS (transfer-adjusted) + 25% PSS + 5% CIS
+
+            **Goalie Transfer Adjustment** compresses goalie-only value toward the league baseline for the all-player Overall view. The dedicated Goalie view uses full goalie-specific value — this prevents a small goalie peer pool from dominating cross-position rankings in early season.
+
+            **Score Scale Calibration** shifts each context toward an average-player baseline near 50 without changing rank order.
             """
         )
 
@@ -601,12 +608,26 @@ else:
         "Role Tier summarizes how meaningfully separated the player is from his role peers."
     )
 
+    with st.expander("Score Tier Guide", expanded=False):
+        st.markdown(
+            """
+            | Score Range | Tier | Description |
+            |---|---|---|
+            | **85+** | Elite / Outlier Elite | Top 10% of role — clear difference-maker |
+            | **70–84** | High-End | Top 25% — reliable contributor above the line |
+            | **55–69** | Solid Starter | Above average — performing their role well |
+            | **45–54** | Average | Close to league-average for the role |
+            | **Below 45** | Developmental / Limited sample | Below average or insufficient games |
+
+            Scores are calibrated so **50 = league average** in the selected context. Small-sample players (fewer games than the context minimum) may have less stable scores.
+            """
+        )
+
     compact_cols_by_view = {
         "Overall": [
             "overall_rank", "position_rank", "full_name", "position", "role_group", "teams", "games",
-            "overall_score", "base_impact_score", "role_context_value_score", "role_value_tier",
-            "offensive_score", "usage_possession_score", "defensive_score", "faceoff_score", "goalie_score",
-            "scoring_value_score", "playmaking_value_score", "ground_ball_score",
+            "overall_score", "peer_standing_score", "role_context_value_score", "role_value_tier",
+            "offense_rps", "defense_rps", "faceoff_rps", "goalie_rps", "cross_role_impact",
             "points_per_game", "scoring_points_per_game", "goals_per_game",
             "one_point_goals_per_game", "two_point_goals_per_game", "assists_per_game",
             "shots_per_game", "touches_per_game", "caused_turnovers_per_game",
@@ -616,29 +637,34 @@ else:
         ],
         "Offense": [
             "role_context_rank", "overall_rank", "position_rank", "full_name", "position", "teams", "games",
-            "role_context_value_score", "overall_score", "role_primary_score", "role_primary_percentile",
+            "role_context_value_score", "overall_score", "offense_rps", "peer_standing_score",
+            "role_primary_score", "role_primary_percentile",
             "role_separation_score", "role_value_tier",
-            "scoring_value_score", "playmaking_value_score",
+            "assist_conv_score", "scoring_value_score", "playmaking_value_score",
             "points_per_game", "scoring_points_per_game", "one_point_goals_per_game",
-            "two_point_goals_per_game", "goals_per_game", "assists_per_game", "shots_per_game", "points_per_touch",
+            "two_point_goals_per_game", "goals_per_game", "assists_per_game",
+            "assist_conv_rate", "shots_per_game", "points_per_touch",
         ],
         "Defense": [
             "role_context_rank", "overall_rank", "position_rank", "full_name", "position", "teams", "games",
-            "role_context_value_score", "overall_score", "defensive_score", "ct_score", "ground_ball_score",
+            "role_context_value_score", "overall_score", "defense_rps", "peer_standing_score",
+            "ct_score", "ground_ball_score",
             "role_primary_score", "role_primary_percentile", "role_separation_score", "role_value_tier",
             "caused_turnovers_per_game", "ground_balls_per_game", "turnovers_per_game",
             "touches_per_game", "points_per_game",
         ],
         "Faceoff": [
             "role_context_rank", "overall_rank", "position_rank", "full_name", "position", "teams", "games",
-            "role_context_value_score", "overall_score", "role_primary_score", "role_primary_percentile",
+            "role_context_value_score", "overall_score", "faceoff_rps", "peer_standing_score",
+            "role_primary_score", "role_primary_percentile",
             "role_separation_score", "role_value_tier",
             "faceoff_pct_for_ranking", "faceoffs_per_game", "faceoffs_won_per_game",
             "ground_balls_per_game", "points_per_game",
         ],
         "Goalie": [
             "role_context_rank", "overall_rank", "position_rank", "full_name", "position", "teams", "games",
-            "role_context_value_score", "overall_score", "goalie_score", "save_pct_score", "saves_score",
+            "role_context_value_score", "overall_score", "goalie_rps", "peer_standing_score",
+            "clean_save_rate_score", "save_pct_score", "saves_score",
             "role_primary_score", "role_primary_percentile", "role_separation_score", "role_value_tier",
             "save_pct_for_ranking", "saves_per_game", "scores_against_per_game", "goals_against_per_game",
             "touches_per_game",
@@ -647,10 +673,14 @@ else:
 
     extra_cols = [
         "role_robust_z", "role_adjusted_z", "role_group_size", "role_reliability",
-        "offensive_score", "usage_possession_score", "defensive_score", "faceoff_score", "goalie_score",
-        "scoring_value_score", "playmaking_value_score", "ground_ball_score",
-        "one_point_goal_score", "two_point_goal_score",
+        "offensive_score", "defensive_score", "faceoff_score", "goalie_score",
+        "offense_rps", "defense_rps", "faceoff_rps", "goalie_rps",
+        "cross_role_impact", "peer_standing_score",
+        "usage_possession_score", "scoring_value_score", "playmaking_value_score",
+        "ground_ball_score", "one_point_goal_score", "two_point_goal_score",
+        "assist_conv_score", "two_pt_conv_score", "clean_save_rate_score",
         "shot_pct_for_ranking", "sog_rate_for_ranking", "goals_per_shot",
+        "assist_conv_rate", "two_pt_conversion", "clean_save_rate",
     ]
 
     ranking_display_cols = compact_cols_by_view.get(ranking_view, compact_cols_by_view["Overall"])
@@ -673,6 +703,10 @@ else:
             "defensive_score": "Defense",
             "faceoff_score": "Faceoff",
             "goalie_score": "Goalie",
+            "offense_rps": "Offense",
+            "defense_rps": "Defense",
+            "faceoff_rps": "Faceoff",
+            "goalie_rps": "Goalie",
         }
         for score_name, role_name in role_score_blank_rules.items():
             if score_name in ranking_table_df.columns:

@@ -95,6 +95,91 @@ if selected_player:
         columns=4
     )
 
+    # ------------------------------------------------------------------
+    # Playmaking Efficiency — shown for offensive players (A, M)
+    # ------------------------------------------------------------------
+    _pp_position = str(summary.get("position", player_row.get("position", ""))).upper().strip()
+    _pp_is_offense = _pp_position in {"A", "M", "AT", "MF", "SSDM"}
+    _pp_is_goalie = _pp_position == "G"
+
+    if _pp_is_offense:
+        _pp_assist_conv = summary.get("assist_conv_rate", np.nan)
+        _pp_assist_opp_pg = summary.get("assist_opp_per_game", np.nan)
+        _pp_two_pt_conv = summary.get("two_pt_conversion", np.nan)
+
+        # Only show section if at least one value is available
+        _pp_has_playmaking = any(
+            pd.notna(v) for v in [_pp_assist_conv, _pp_assist_opp_pg, _pp_two_pt_conv]
+        )
+        if _pp_has_playmaking:
+            st.markdown("### Playmaking Efficiency")
+            st.caption(
+                "Assist conversion rate = Assists / Assist Opportunities. "
+                "2PT conversion = 2PT Goals / 2PT Shots attempted."
+            )
+            _pm_cards = st.columns(4)
+            with _pm_cards[0]:
+                stat_card(
+                    "Assist Conv %",
+                    f"{_pp_assist_conv * 100:.1f}%" if pd.notna(_pp_assist_conv) else "—"
+                )
+            with _pm_cards[1]:
+                stat_card(
+                    "Assist Opp/G",
+                    f"{_pp_assist_opp_pg:.2f}" if pd.notna(_pp_assist_opp_pg) else "—"
+                )
+            with _pm_cards[2]:
+                stat_card(
+                    "2PT Conv %",
+                    f"{_pp_two_pt_conv * 100:.1f}%" if pd.notna(_pp_two_pt_conv) else "—"
+                )
+            with _pm_cards[3]:
+                _pp_assist_opp_total = summary.get("assist_opportunities", np.nan)
+                stat_card(
+                    "Assist Opp",
+                    f"{int(_pp_assist_opp_total)}" if pd.notna(_pp_assist_opp_total) else "—"
+                )
+
+    # ------------------------------------------------------------------
+    # Save Quality — shown for goalies
+    # ------------------------------------------------------------------
+    if _pp_is_goalie:
+        _pp_clean_saves = summary.get("clean_saves", np.nan)
+        _pp_messy_saves = summary.get("messy_saves", np.nan)
+        _pp_clean_save_pct = summary.get("clean_save_pct", np.nan)
+        _pp_clean_save_rate = summary.get("clean_save_rate", np.nan)
+
+        _pp_has_save_quality = any(
+            pd.notna(v) for v in [_pp_clean_saves, _pp_messy_saves, _pp_clean_save_pct]
+        )
+        if _pp_has_save_quality:
+            st.markdown("### Save Quality")
+            st.caption(
+                "Clean saves are skill-based stops; messy saves include scramble and rebound saves. "
+                "Clean Save % = Clean Saves / Total Saves."
+            )
+            _sq_cards = st.columns(4)
+            with _sq_cards[0]:
+                stat_card(
+                    "Clean Saves",
+                    f"{int(_pp_clean_saves)}" if pd.notna(_pp_clean_saves) else "—"
+                )
+            with _sq_cards[1]:
+                stat_card(
+                    "Messy Saves",
+                    f"{int(_pp_messy_saves)}" if pd.notna(_pp_messy_saves) else "—"
+                )
+            with _sq_cards[2]:
+                stat_card(
+                    "Clean Save%",
+                    f"{_pp_clean_save_pct:.1f}%" if pd.notna(_pp_clean_save_pct) else "—"
+                )
+            with _sq_cards[3]:
+                stat_card(
+                    "Clean Save Rate",
+                    f"{_pp_clean_save_rate * 100:.1f}%" if pd.notna(_pp_clean_save_rate) else "—"
+                )
+
     st.markdown("### Season Totals and Averages")
     st.caption("Season-by-season totals and per-game averages for the selected player.")
 
@@ -206,8 +291,10 @@ if selected_player:
 
         recent_games = query_df(f"""
             SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
-                   points, goals, assists, shots, shots_on_goal, ground_balls, turnovers,
-                   caused_turnovers, saves, saa, faceoffs_won, faceoffs_lost, touches, total_passes
+                   points, goals, assists, assist_opportunities, shots, shots_on_goal,
+                   ground_balls, turnovers, caused_turnovers,
+                   saves, clean_saves, messy_saves, saa, faceoffs_won, faceoffs_lost,
+                   touches, total_passes
             FROM clean.player_game_stats
             WHERE player_id = ?
             ORDER BY game_date_utc DESC, season DESC, game_number DESC
@@ -236,8 +323,10 @@ if selected_player:
 
     game_log = query_df("""
         SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
-               points, goals, assists, shots, shots_on_goal, ground_balls, turnovers,
-               caused_turnovers, saves, saa, faceoffs_won, faceoffs_lost, touches, total_passes
+               points, goals, assists, assist_opportunities, shots, shots_on_goal,
+               ground_balls, turnovers, caused_turnovers,
+               saves, clean_saves, messy_saves, saa,
+               faceoffs_won, faceoffs_lost, touches, total_passes
         FROM clean.player_game_stats
         WHERE player_id = ?
         ORDER BY season DESC, game_number DESC

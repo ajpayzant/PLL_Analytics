@@ -110,7 +110,10 @@ else:
         "turnovers", "caused_turnovers", "touches", "total_passes",
         "points_per_game", "goals_per_game", "assists_per_game",
         "shots_per_game", "ground_balls_per_game", "turnovers_per_game",
-        "caused_turnovers_per_game", "shot_pct_calc", "shots_on_goal_rate_calc"
+        "caused_turnovers_per_game", "shot_pct_calc", "shots_on_goal_rate_calc",
+        # Phase 2 new metrics (present only after warehouse rebuild)
+        "assist_conv_rate", "two_pt_conversion", "clean_save_rate",
+        "assist_opportunities", "assist_opp_per_game",
     ]
 
     display_comparison_matrix(compare_df, "full_name", player_compare_metrics, height=500)

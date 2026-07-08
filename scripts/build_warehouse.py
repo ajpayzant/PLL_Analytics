@@ -2387,10 +2387,52 @@ def add_player_rate_columns(df):
             np.nan
         )
 
+    if "clean_saves" in out.columns and "saves" in out.columns:
+        out["clean_save_pct"] = np.where(
+            pd.to_numeric(out["saves"], errors="coerce") > 0,
+            pd.to_numeric(out["clean_saves"], errors="coerce") / pd.to_numeric(out["saves"], errors="coerce") * 100,
+            np.nan
+        )
+
+    if "clean_saves" in out.columns and "saves" in out.columns and "goals_against" in out.columns:
+        _shots_faced = (
+            pd.to_numeric(out["saves"], errors="coerce").fillna(0)
+            + pd.to_numeric(out["goals_against"], errors="coerce").fillna(0)
+        )
+        out["clean_save_rate"] = np.where(
+            _shots_faced > 0,
+            pd.to_numeric(out["clean_saves"], errors="coerce") / _shots_faced,
+            np.nan
+        )
+
+    if "assist_opportunities" in out.columns and "assists" in out.columns:
+        out["assist_conv_rate"] = np.where(
+            pd.to_numeric(out["assist_opportunities"], errors="coerce") > 0,
+            pd.to_numeric(out["assists"], errors="coerce") / pd.to_numeric(out["assist_opportunities"], errors="coerce"),
+            np.nan
+        )
+
+    if "two_point_goals" in out.columns and "two_point_shots" in out.columns:
+        out["two_pt_conversion"] = np.where(
+            pd.to_numeric(out["two_point_shots"], errors="coerce") > 0,
+            pd.to_numeric(out["two_point_goals"], errors="coerce") / pd.to_numeric(out["two_point_shots"], errors="coerce"),
+            np.nan
+        )
+
     if "games" in out.columns:
         for c in PLAYER_SUM_COLS:
             if c in out.columns:
                 out[f"{c}_per_game"] = np.where(out["games"] > 0, out[c] / out["games"], np.nan)
+
+    # Convenience alias for assist opportunities per game
+    if "assist_opportunities_per_game" in out.columns:
+        out["assist_opp_per_game"] = out["assist_opportunities_per_game"]
+    elif "assist_opportunities" in out.columns and "games" in out.columns:
+        out["assist_opp_per_game"] = np.where(
+            pd.to_numeric(out["games"], errors="coerce") > 0,
+            pd.to_numeric(out["assist_opportunities"], errors="coerce") / pd.to_numeric(out["games"], errors="coerce"),
+            np.nan
+        )
 
     return out
 
@@ -4039,6 +4081,9 @@ def _add_player_ranking_scores(df):
         "faceoffs_per_game", "faceoffs_won_per_game", "faceoffs_lost_per_game",
         "saves_per_game", "goals_against_per_game", "scores_against_per_game",
         "save_pct_calc", "two_point_shots", "two_point_goals", "games",
+        # Phase 2 new columns
+        "assist_opportunities", "assists", "clean_saves", "messy_saves",
+        "two_point_shots", "saves", "goals_against", "clean_save_pct",
     ]
     out = _ensure_cols(out, needed)
 
@@ -4089,6 +4134,44 @@ def _add_player_ranking_scores(df):
     )
 
     # ------------------------------------------------------------------
+    # Phase 2 derived fields.
+    # ------------------------------------------------------------------
+    # Assist conversion rate: assists / assist_opportunities
+    out["assist_conv_rate"] = np.where(
+        pd.to_numeric(out.get("assist_opportunities", pd.Series(np.nan, index=out.index)), errors="coerce") > 0,
+        pd.to_numeric(out.get("assists", pd.Series(np.nan, index=out.index)), errors="coerce")
+        / pd.to_numeric(out.get("assist_opportunities", pd.Series(np.nan, index=out.index)), errors="coerce"),
+        np.nan,
+    )
+
+    # 2PT shot conversion: two_point_goals / two_point_shots
+    out["two_pt_conversion"] = np.where(
+        pd.to_numeric(out.get("two_point_shots", pd.Series(np.nan, index=out.index)), errors="coerce") > 0,
+        pd.to_numeric(out.get("two_point_goals", pd.Series(np.nan, index=out.index)), errors="coerce")
+        / pd.to_numeric(out.get("two_point_shots", pd.Series(np.nan, index=out.index)), errors="coerce"),
+        np.nan,
+    )
+
+    # Clean save rate: clean_saves / (saves + goals_against)
+    _goalie_shots_faced = (
+        pd.to_numeric(out.get("saves", pd.Series(0, index=out.index)), errors="coerce").fillna(0)
+        + pd.to_numeric(out.get("goals_against", pd.Series(0, index=out.index)), errors="coerce").fillna(0)
+    )
+    out["clean_save_rate"] = np.where(
+        _goalie_shots_faced > 0,
+        pd.to_numeric(out.get("clean_saves", pd.Series(np.nan, index=out.index)), errors="coerce") / _goalie_shots_faced,
+        np.nan,
+    )
+
+    # Assist opportunities per game
+    out["assist_opp_per_game"] = np.where(
+        pd.to_numeric(out.get("games", pd.Series(0, index=out.index)), errors="coerce") > 0,
+        pd.to_numeric(out.get("assist_opportunities", pd.Series(np.nan, index=out.index)), errors="coerce")
+        / pd.to_numeric(out.get("games", pd.Series(0, index=out.index)), errors="coerce"),
+        np.nan,
+    )
+
+    # ------------------------------------------------------------------
     # Component scores.
     #
     # KEY DESIGN PRINCIPLE: role-primary metrics are scored within each
@@ -4132,6 +4215,12 @@ def _add_player_ranking_scores(df):
     out["goals_against_score"] = _role_metric_score(out, "goals_against_per_game", False)
     out["scores_against_score"] = _role_metric_score(out, "scores_against_per_game", False)
 
+    # Phase 2 new metric scores (role-peer)
+    out["assist_conv_score"] = _role_metric_score(out, "assist_conv_rate", True)
+    out["two_pt_conv_score"] = _role_metric_score(out, "two_pt_conversion", True)
+    out["clean_save_rate_score"] = _role_metric_score(out, "clean_save_rate", True)
+    out["assist_opp_score"] = _role_metric_score(out, "assist_opp_per_game", True)
+
     # Role-peer usage for blending
     out["touches_score_role"] = _role_metric_score(out, "touches_per_game", True)
     out["shots_score_role"] = _role_metric_score(out, "shots_per_game", True)
@@ -4145,7 +4234,7 @@ def _add_player_ranking_scores(df):
     out["ground_ball_score"] = _weighted_available_score(out, {"ground_ball_score_global": 0.70, "ground_ball_score_role": 0.30})
 
     # ------------------------------------------------------------------
-    # Composite scores — built from role-peer component scores above
+    # Legacy composite scores — retained for backward compatibility
     # ------------------------------------------------------------------
     out["scoring_value_score"] = _weighted_available_score(out, {
         "scoring_points_score": 0.34,
@@ -4169,16 +4258,6 @@ def _add_player_ranking_scores(df):
         "scoring_value_score": 0.60,
         "playmaking_value_score": 0.40,
     })
-
-    out["offensive_score"] = _weighted_available_score(out, {
-        "points_score": 0.30,
-        "scoring_value_score": 0.22,
-        "playmaking_value_score": 0.22,
-        "goals_score": 0.12,
-        "shots_score": 0.08,
-        "shot_pct_score": 0.06,
-    })
-    out["offensive_score_raw"] = out["offensive_score"]
 
     # Usage: blend global (how much possession vs all players) with
     # role-peer (how much vs role peers) to keep offensive players
@@ -4207,47 +4286,87 @@ def _add_player_ranking_scores(df):
     })
     out["usage_score"] = out["usage_possession_score"]
 
-    # Defensive score: CT and GB scored within defensive role group only
-    out["defensive_score"] = _weighted_available_score(out, {
-        "ct_score": 0.58,
-        "ground_ball_score": 0.24,
-        "turnover_security_score": 0.10,
-        "touches_score": 0.08,
-    })
-    out["defensive_score_raw"] = out["defensive_score"]
+    # ------------------------------------------------------------------
+    # Phase 2 — Role Performance Score (RPS) per role.
+    #
+    # Clean 3-component architecture replacing the old flat composite:
+    #   RPS  = pure role-specific production score
+    #   PSS  = peer standing (where player ranks among role peers)
+    #   CIS  = cross-role impact (global contributions)
+    # ------------------------------------------------------------------
 
-    out["faceoff_score"] = _weighted_available_score(out, {
-        "faceoff_pct_score": 0.52,
-        "faceoff_wins_score": 0.24,
-        "faceoff_volume_score": 0.08,
-        "ground_ball_score": 0.16,
+    # Offense RPS: points production + creation + shot quality
+    out["offense_rps"] = _weighted_available_score(out, {
+        "points_score": 0.28,
+        "scoring_points_score": 0.18,
+        "goals_score": 0.15,
+        "assists_score": 0.12,
+        "assist_conv_score": 0.12,
+        "shots_score": 0.08,
+        "shot_pct_score": 0.05,
+        "two_pt_conv_score": 0.02,
     })
-    out["faceoff_score_raw"] = out["faceoff_score"]
 
-    out["goalie_score"] = _weighted_available_score(out, {
-        "save_pct_score": 0.56,
-        "saves_score": 0.24,
-        "goals_against_score": 0.12,
-        "scores_against_score": 0.08,
+    # Defense RPS: disruption + possession recovery
+    out["defense_rps"] = _weighted_available_score(out, {
+        "ct_score": 0.55,
+        "ground_ball_score": 0.30,
+        "turnover_security_score": 0.15,
     })
-    out["goalie_score_raw"] = out["goalie_score"]
+
+    # Faceoff RPS: winning possessions
+    out["faceoff_rps"] = _weighted_available_score(out, {
+        "faceoff_pct_score": 0.55,
+        "faceoff_wins_score": 0.30,
+        "faceoff_volume_score": 0.15,
+    })
+
+    # Goalie RPS: stopping the ball — clean_save_rate as primary
+    out["goalie_rps"] = _weighted_available_score(out, {
+        "clean_save_rate_score": 0.40,
+        "save_pct_score": 0.35,
+        "saves_score": 0.15,
+        "goals_against_score": 0.10,
+    })
+
+    # Aliases for backward-compatibility with existing page columns
+    out["offensive_score"] = out["offense_rps"]
+    out["offensive_score_raw"] = out["offense_rps"]
+    out["defensive_score"] = out["defense_rps"]
+    out["defensive_score_raw"] = out["defense_rps"]
+    out["faceoff_score"] = out["faceoff_rps"]
+    out["faceoff_score_raw"] = out["faceoff_rps"]
+    out["goalie_score"] = out["goalie_rps"]
+    out["goalie_score_raw"] = out["goalie_rps"]
+
+    # Cross-Role Impact Score (CIS) — global contributions all players make
+    out["cross_role_impact"] = _weighted_available_score(out, {
+        "ground_ball_score_global": 0.45,
+        "touches_score_global": 0.35,
+        "turnover_security_score": 0.20,
+    })
 
     # ------------------------------------------------------------------
-    # Role context = role score + role percentile + peer separation.
+    # Role context = RPS as role_primary_score + peer separation.
     # ------------------------------------------------------------------
-    role_primary_map = {
-        "Offense": "offensive_score",
-        "Defense": "defensive_score",
-        "Faceoff": "faceoff_score",
-        "Goalie": "goalie_score",
+    role_rps_map = {
+        "Offense": "offense_rps",
+        "Defense": "defense_rps",
+        "Faceoff": "faceoff_rps",
+        "Goalie": "goalie_rps",
     }
 
     out["role_primary_score"] = np.nan
-    for role_name, col in role_primary_map.items():
+    for role_name, col in role_rps_map.items():
         mask = out["role_group"].eq(role_name)
         out.loc[mask, "role_primary_score"] = pd.to_numeric(out.loc[mask, col], errors="coerce")
 
     out = _add_test_style_role_separation(out)
+
+    # Peer Standing Score (PSS): role_primary_score through sigmoid
+    out["peer_standing_score"] = _sigmoid_stretch(_rank_pct(
+        out["role_primary_score"].where(out["role_primary_score"].notna()), True
+    ))
 
     out["role_context_value_score"] = _weighted_available_score(out, {
         "role_primary_score": 0.50,
@@ -4257,59 +4376,12 @@ def _add_player_ranking_scores(df):
     out["role_context_percentile"] = out["role_primary_percentile"]
 
     # ------------------------------------------------------------------
-    # Base impact signal.
-    #
-    # Important: this must be role-specific. A previous version blended every
-    # player across offense + defense + faceoff + goalie components, which
-    # dragged every player's base score down and made defenders/goalies/FOs look
-    # much worse overall. The base score below keeps players evaluated mostly by
-    # the skills that actually define their role while still adding small
-    # cross-role value for GBs, usage, and offensive contribution where relevant.
+    # Final overall score — role-specific 3-component blend.
     # ------------------------------------------------------------------
-    offense_base = _weighted_available_score(out, {
-        "offensive_score": 0.50,
-        "usage_possession_score": 0.20,
-        "scoring_value_score": 0.15,
-        "playmaking_value_score": 0.15,
-    })
-
-    defense_base = _weighted_available_score(out, {
-        "defensive_score": 0.68,
-        "ct_score": 0.10,
-        "ground_ball_score": 0.10,
-        "usage_possession_score": 0.08,
-        "offensive_score": 0.04,
-    })
-
-    faceoff_base = _weighted_available_score(out, {
-        "faceoff_score": 0.46,
-        "ground_ball_score": 0.26,
-        "usage_possession_score": 0.16,
-        "offensive_score": 0.12,
-    })
-
-    goalie_base = _weighted_available_score(out, {
-        "goalie_score": 0.58,
-        "save_pct_score": 0.22,
-        "saves_score": 0.12,
-        "goals_against_score": 0.05,
-        "scores_against_score": 0.03,
-    })
-
-    out["base_impact_score"] = np.select(
-        [
-            out["role_group"].eq("Offense"),
-            out["role_group"].eq("Defense"),
-            out["role_group"].eq("Faceoff"),
-            out["role_group"].eq("Goalie"),
-        ],
-        [offense_base, defense_base, faceoff_base, goalie_base],
-        default=np.nan,
-    )
+    out["base_impact_score"] = out["role_primary_score"].copy()
     out["base_impact_score"] = pd.to_numeric(out["base_impact_score"], errors="coerce").clip(0, 100)
 
-    # Keep overall_impact_score as the base-impact alias for compatibility with
-    # the Colab test export. Do not overwrite it with the final overall score.
+    # Keep overall_impact_score as the base-impact alias for compatibility.
     out["overall_impact_score"] = out["base_impact_score"]
 
     # ------------------------------------------------------------------
@@ -4341,18 +4413,18 @@ def _add_player_ranking_scores(df):
     max_games_in_ctx = float(out["games"].max()) if len(out) else 0
     sample_factor = float(np.clip(max_games_in_ctx / 10.0, 0.15, 1.0))
 
-    goalie_base_factor    = 0.55 + 0.19 * sample_factor   # 0.55 early → 0.74 full
-    goalie_ctx_factor     = 0.30 + 0.20 * sample_factor   # 0.30 early → 0.50 full
-    goalie_savepct_factor = 0.45 + 0.25 * sample_factor   # 0.45 early → 0.70 full
-    goalie_saves_factor   = 0.45 + 0.25 * sample_factor   # 0.45 early → 0.70 full
+    goalie_rps_factor = 0.55 + 0.15 * sample_factor   # 0.55 early → 0.70 full
+    goalie_ctx_factor = 0.30 + 0.20 * sample_factor   # 0.30 early → 0.50 full
+    goalie_savepct_factor = 0.45 + 0.25 * sample_factor  # 0.45 early → 0.70 full
+    goalie_saves_factor = 0.45 + 0.25 * sample_factor    # 0.45 early → 0.70 full
 
     # FO specialists: compress role context more in small samples
-    fo_ctx_factor = 0.45 + 0.15 * sample_factor           # 0.45 early → 0.60 full
+    fo_ctx_factor = 0.45 + 0.15 * sample_factor  # 0.45 early → 0.60 full
 
     goalie_mask = out["role_group"].eq("Goalie")
     fo_mask = out["role_group"].eq("Faceoff")
 
-    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "base_impact_score"], goalie_base_factor)
+    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "base_impact_score"], goalie_rps_factor)
     out.loc[goalie_mask, "goalie_role_context_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "role_context_value_score"], goalie_ctx_factor)
     out.loc[goalie_mask, "goalie_save_pct_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "save_pct_score"], goalie_savepct_factor)
     out.loc[goalie_mask, "goalie_saves_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "saves_score"], goalie_saves_factor)
@@ -4360,6 +4432,19 @@ def _add_player_ranking_scores(df):
     # FO role context: apply sample-scaled compression for overall ranking
     out["fo_role_context_for_overall"] = out["role_context_value_score"].copy()
     out.loc[fo_mask, "fo_role_context_for_overall"] = _transfer_toward_average(out.loc[fo_mask, "role_context_value_score"], fo_ctx_factor)
+
+    # 3-component overall formula per role:
+    #   Offense:  0.60 RPS + 0.25 PSS + 0.15 CIS
+    #   Defense:  0.65 RPS + 0.25 PSS + 0.10 CIS
+    #   Faceoff:  0.65 RPS + 0.25 PSS + 0.10 CIS
+    #   Goalie:   0.70 RPS + 0.25 PSS + 0.05 CIS  (with specialist compression)
+    _pss = pd.to_numeric(out.get("peer_standing_score", pd.Series(50.0, index=out.index)), errors="coerce").fillna(50.0)
+    _cis = pd.to_numeric(out.get("cross_role_impact", pd.Series(50.0, index=out.index)), errors="coerce").fillna(50.0)
+    _rps_off = pd.to_numeric(out["offense_rps"], errors="coerce").fillna(50.0)
+    _rps_def = pd.to_numeric(out["defense_rps"], errors="coerce").fillna(50.0)
+    _rps_fo = pd.to_numeric(out["faceoff_rps"], errors="coerce").fillna(50.0)
+    _rps_g_adj = pd.to_numeric(out["goalie_base_for_overall"], errors="coerce").fillna(50.0)
+    _pss_adj_g = pd.to_numeric(out["goalie_role_context_for_overall"], errors="coerce").fillna(50.0)
 
     out["overall_score_raw"] = np.select(
         [
@@ -4369,10 +4454,10 @@ def _add_player_ranking_scores(df):
             out["role_group"].eq("Goalie"),
         ],
         [
-            0.60 * out["base_impact_score"] + 0.20 * out["role_context_value_score"] + 0.10 * out["usage_possession_score"] + 0.10 * out["offensive_creation_score"],
-            0.58 * out["base_impact_score"] + 0.34 * out["role_context_value_score"] + 0.08 * out["usage_possession_score"],
-            0.74 * out["base_impact_score"] + 0.14 * out["fo_role_context_for_overall"] + 0.07 * out["ground_ball_score"] + 0.05 * out["usage_possession_score"],
-            0.72 * out["goalie_base_for_overall"] + 0.12 * out["goalie_role_context_for_overall"] + 0.10 * out["goalie_save_pct_for_overall"] + 0.06 * out["goalie_saves_for_overall"],
+            0.60 * _rps_off + 0.25 * _pss + 0.15 * _cis,
+            0.65 * _rps_def + 0.25 * _pss + 0.10 * _cis,
+            0.65 * _rps_fo + 0.25 * _pss + 0.10 * _cis,
+            0.70 * _rps_g_adj + 0.25 * _pss_adj_g + 0.05 * _cis,
         ],
         default=out["base_impact_score"],
     )

@@ -3,6 +3,9 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
+import pandas as pd
+
 from shared.db import query_df, filter_values
 from shared.ui import (
     apply_css, stat_card, safe_bar_chart, safe_line_chart, display_table,
@@ -69,7 +72,7 @@ if specialist_section == "Goalies":
     goalie_df = query_df("""
         SELECT season, player_id, full_name, position, position_name, teams, games,
                saves, clean_saves, messy_saves, scores_against, saa, goals_against,
-               shots, save_pct_calc, saves_per_game, clean_saves_per_game,
+               shots, save_pct_calc, clean_save_pct, saves_per_game, clean_saves_per_game,
                messy_saves_per_game, scores_against_per_game, saa_per_game, goals_against_per_game
         FROM marts.player_season_stats
         WHERE season = ?
@@ -82,8 +85,9 @@ if specialist_section == "Goalies":
 
     goalie_metric_options = [
         c for c in [
-            "save_pct_display", "saves", "saves_per_game", "shots_faced_calc",
-            "shots_faced_per_game_calc", "goals_against", "goals_against_per_game",
+            "save_pct_display", "clean_save_pct", "saves", "saves_per_game",
+            "shots_faced_calc", "shots_faced_per_game_calc",
+            "goals_against", "goals_against_per_game",
             "scores_against", "scores_against_per_game", "saa", "saa_per_game",
             "clean_saves", "messy_saves",
         ]
@@ -131,11 +135,25 @@ if specialist_section == "Goalies":
     goalie_summary_cols = _pll_select_existing(
         goalie_display,
         ["season", "full_name", "position", "teams", "games",
-         "saves", "goals_against", "scores_against", "shots_faced_calc",
-         "save_pct_display_pct", "saves_per_game", "goals_against_per_game",
+         "saves", "clean_saves", "messy_saves", "goals_against", "scores_against",
+         "shots_faced_calc", "save_pct_display_pct", "clean_save_pct",
+         "saves_per_game", "goals_against_per_game",
          "scores_against_per_game", "shots_faced_per_game_calc"]
     )
     display_table(goalie_display[goalie_summary_cols], height=420)
+
+    # Save Quality leaderboard — sorted by clean_save_pct
+    _sq_has_data = "clean_save_pct" in goalie_display.columns and goalie_display["clean_save_pct"].notna().any()
+    if _sq_has_data:
+        st.markdown("#### Save Quality Leaders")
+        st.caption("Sorted by Clean Save % — the proportion of saves that were clean (skill-based) vs messy (scramble).")
+        _sq_df = goalie_display.sort_values("clean_save_pct", ascending=False).head(15)
+        safe_bar_chart(
+            _sq_df.sort_values("clean_save_pct"),
+            x_col="full_name", y_col="clean_save_pct", color_col="teams",
+            title=f"{goalie_season} Goalies — Clean Save %",
+            orientation="h"
+        )
 
     with st.expander("Advanced goalie metrics", expanded=False):
         goalie_advanced_cols = _pll_select_existing(
@@ -173,6 +191,25 @@ if specialist_section == "Goalies":
         goalie_games = _pll_apply_goalie_save_pct(goalie_games)
         profile_header(selected_goalie, "Goalie game log and trend view")
 
+        # Save Quality breakdown stat cards
+        _gx_clean = goalie_games["clean_saves"].sum() if "clean_saves" in goalie_games.columns else np.nan
+        _gx_messy = goalie_games["messy_saves"].sum() if "messy_saves" in goalie_games.columns else np.nan
+        _gx_total = goalie_games["saves"].sum() if "saves" in goalie_games.columns else np.nan
+        _gx_clean_pct = (_gx_clean / _gx_total * 100) if (pd.notna(_gx_clean) and pd.notna(_gx_total) and _gx_total > 0) else np.nan
+
+        _gx_has_quality = any(pd.notna(v) for v in [_gx_clean, _gx_messy, _gx_clean_pct])
+        if _gx_has_quality:
+            st.markdown("#### Save Quality Breakdown")
+            _gx_cols = st.columns(4)
+            with _gx_cols[0]:
+                stat_card("Total Saves", f"{int(_gx_total)}" if pd.notna(_gx_total) else "—")
+            with _gx_cols[1]:
+                stat_card("Clean Saves", f"{int(_gx_clean)}" if pd.notna(_gx_clean) else "—")
+            with _gx_cols[2]:
+                stat_card("Messy Saves", f"{int(_gx_messy)}" if pd.notna(_gx_messy) else "—")
+            with _gx_cols[3]:
+                stat_card("Clean Save%", f"{_gx_clean_pct:.1f}%" if pd.notna(_gx_clean_pct) else "—")
+
         goalie_game_cols = _pll_select_existing(
             goalie_games,
             ["season", "game_number", "game_date_utc", "team_name", "opponent_team_name",
@@ -182,7 +219,8 @@ if specialist_section == "Goalies":
         display_table(goalie_games[goalie_game_cols], height=360)
 
         goalie_game_metric_options = [
-            c for c in ["saves", "goals_against", "scores_against", "shots_faced_calc", "save_pct_display"]
+            c for c in ["saves", "clean_saves", "messy_saves", "goals_against", "scores_against",
+                        "shots_faced_calc", "save_pct_display"]
             if c in goalie_games.columns
         ]
 
@@ -200,6 +238,39 @@ if specialist_section == "Goalies":
                 goalie_trend, x_col="game_label", y_cols=[goalie_game_metric],
                 title=f"{selected_goalie} — {pretty_col(goalie_game_metric)} by Game"
             )
+
+            # Clean vs Messy Saves bar chart (game-by-game)
+            _cv_has = (
+                "clean_saves" in goalie_trend.columns
+                and "messy_saves" in goalie_trend.columns
+                and goalie_trend["clean_saves"].notna().any()
+            )
+            if _cv_has:
+                import pandas as _pd_cv
+                import plotly.express as _px_cv
+                _cv_long = goalie_trend[["game_label", "clean_saves", "messy_saves"]].copy()
+                _cv_long = _cv_long.dropna(subset=["clean_saves", "messy_saves"], how="all")
+                if len(_cv_long) > 0:
+                    _cv_melted = _cv_long.melt(
+                        id_vars="game_label",
+                        value_vars=["clean_saves", "messy_saves"],
+                        var_name="save_type",
+                        value_name="saves"
+                    )
+                    _cv_melted["save_type"] = _cv_melted["save_type"].map(
+                        {"clean_saves": "Clean Saves", "messy_saves": "Messy Saves"}
+                    )
+                    _cv_fig = _px_cv.bar(
+                        _cv_melted,
+                        x="game_label",
+                        y="saves",
+                        color="save_type",
+                        barmode="stack",
+                        title=f"{selected_goalie} — Clean vs Messy Saves by Game",
+                        labels={"game_label": "Game", "saves": "Saves", "save_type": "Save Type"}
+                    )
+                    _cv_fig.update_layout(margin=dict(l=10, r=20, t=45, b=10))
+                    st.plotly_chart(_cv_fig, use_container_width=True)
 
 # ============================================================
 # FACEOFF SPECIALISTS
