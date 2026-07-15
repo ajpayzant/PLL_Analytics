@@ -23,29 +23,50 @@ ARTIFACT_INDEX_PATH = os.getenv(
 # ============================================================
 # CONNECTION
 # ============================================================
+#
+# One shared, read-only DuckDB connection for the whole app session, cached as a
+# Streamlit resource. The previous implementation opened a NEW duckdb.connect()
+# on EVERY query_df/read_table call; with many cached queries firing per page
+# load (and on Streamlit reruns) that produced many concurrent opens against the
+# same file. Under load on Streamlit Cloud that intermittently crashed the
+# container — surfacing as a "400 connection error" on load and needing a
+# reboot. A single cached connection removes the churn. Access is serialised
+# with a lock because one DuckDB connection object is not safe to use from
+# multiple threads at once (Streamlit may run work on several threads), and we
+# use .cursor() per query so concurrent callers don't clobber each other's
+# result cursor.
 
+import threading
+
+_CONN_LOCK = threading.Lock()
+
+
+@st.cache_resource(show_spinner=False)
 def get_connection():
+    """Process-wide read-only DuckDB connection (opened once, reused)."""
     return duckdb.connect(DB_PATH, read_only=True)
+
+
+def _run(sql, params=None):
+    con = get_connection()
+    with _CONN_LOCK:
+        cur = con.cursor()
+        try:
+            if params is None:
+                return cur.execute(sql).df()
+            return cur.execute(sql, params).df()
+        finally:
+            cur.close()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def query_df(sql, params=None):
-    con = get_connection()
-    try:
-        if params is None:
-            return con.execute(sql).df()
-        return con.execute(sql, params).df()
-    finally:
-        con.close()
+    return _run(sql, params)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def read_table(table_name: str) -> pd.DataFrame:
-    con = get_connection()
-    try:
-        return con.execute(f"SELECT * FROM {table_name}").df()
-    finally:
-        con.close()
+    return _run(f"SELECT * FROM {table_name}")
 
 
 # ============================================================

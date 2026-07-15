@@ -1,11 +1,19 @@
-pandas
-numpy
-requests
-tenacity
-tqdm
-pyarrow
-duckdb
-fastparquet
-openpyxl
-streamlit
-plotly
+# Pinned to known-good versions. The app previously ran unpinned, so every
+# Streamlit Cloud rebuild could pull a newer duckdb/streamlit — a DuckDB version
+# bump can refuse to open a DB file written by an older version, which showed up
+# as the app "working for days then suddenly failing with a 400 on load". Pin
+# the versions that are verified to work with the committed warehouse .duckdb.
+# Bump these deliberately (and re-test) rather than letting them drift.
+duckdb==1.5.3
+streamlit==1.58.0
+pandas>=2.2,<3.1
+numpy>=1.26,<3
+pyarrow>=16
+requests>=2.31
+tenacity>=8.2
+tqdm>=4.66
+fastparquet>=2024.2
+openpyxl>=3.1
+plotly>=5.20
+scikit-learn>=1.4
+scipy>=1.12

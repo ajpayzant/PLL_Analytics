@@ -1,7 +1,16 @@
+# Tuned for Streamlit Cloud stability. CORS/XSRF are already off (needed so the
+# proxied websocket handshake isn't rejected with a 400 on reconnect/redeploy).
+# The extra settings below reduce cold-start churn and websocket flakiness.
 [server]
 headless = true
 enableCORS = false
 enableXsrfProtection = false
+enableWebsocketCompression = false   # compression negotiation can fail behind the cloud proxy
+fileWatcherType = "none"             # no source watching needed in a deployed container
+runOnSave = false
 
 [browser]
 gatherUsageStats = false
+
+[runner]
+fastReruns = true
