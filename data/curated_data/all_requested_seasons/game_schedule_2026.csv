@@ -26,10 +26,10 @@ season,game_number,slug,event_id,event_numeric_id,game_date_guess,away_team_id_r
 2026,25,2026-ev-27,2026_game_27,498,2026-07-11 01:00:00+00:00,ARC,Archers,ATL,Atlas,ARC,Archers,ATL,Atlas,16,5,3,3.0,final,event_list_endpoint,event_list_endpoint
 2026,26,2026-ev-28,2026_game_28,500,2026-07-11 18:00:00+00:00,OUT,Outlaws,CAN,Cannons,OUT,Outlaws,CAN,Cannons,13,15,3,3.0,final,event_list_endpoint,event_list_endpoint
 2026,27,2026-ev-26,2026_game_26,497,2026-07-12 01:30:00+00:00,WHP,Whipsnakes,CHA,Chaos,WHP,Whipsnakes,CHA,Chaos,17,10,3,3.0,final,event_list_endpoint,event_list_endpoint
-2026,28,2026-ev-29,2026_game_29,501,2026-07-17 22:00:00+00:00,RED,Redwoods,WHP,Whipsnakes,RED,Redwoods,WHP,Whipsnakes,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
-2026,29,2026-ev-30,2026_game_30,503,2026-07-18 18:00:00+00:00,CHA,Chaos,OUT,Outlaws,CHA,Chaos,OUT,Outlaws,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
-2026,30,2026-ev-31,2026_game_31,504,2026-07-18 20:30:00+00:00,ARC,Archers,WAT,Waterdogs,ARC,Archers,WAT,Waterdogs,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
-2026,31,2026-ev-32,2026_game_32,505,2026-07-19 19:00:00+00:00,ATL,Atlas,CAN,Cannons,ATL,Atlas,CAN,Cannons,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
+2026,28,2026-ev-29,2026_game_29,501,2026-07-17 22:00:00+00:00,RED,Redwoods,WHP,Whipsnakes,RED,Redwoods,WHP,Whipsnakes,7,20,3,3.0,final,event_list_endpoint,event_list_endpoint
+2026,29,2026-ev-30,2026_game_30,503,2026-07-18 18:00:00+00:00,CHA,Chaos,OUT,Outlaws,CHA,Chaos,OUT,Outlaws,8,10,3,3.0,final,event_list_endpoint,event_list_endpoint
+2026,30,2026-ev-31,2026_game_31,504,2026-07-18 20:30:00+00:00,ARC,Archers,WAT,Waterdogs,ARC,Archers,WAT,Waterdogs,18,8,3,3.0,final,event_list_endpoint,event_list_endpoint
+2026,31,2026-ev-32,2026_game_32,505,2026-07-19 19:00:00+00:00,ATL,Atlas,CAN,Cannons,ATL,Atlas,CAN,Cannons,13,15,3,3.0,final,event_list_endpoint,event_list_endpoint
 2026,32,2026-ev-33,2026_game_33,506,2026-07-25 00:00:00+00:00,ARC,Archers,OUT,Outlaws,ARC,Archers,OUT,Outlaws,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
 2026,33,2026-ev-34,2026_game_34,507,2026-07-25 02:30:00+00:00,WAT,Waterdogs,ATL,Atlas,WAT,Waterdogs,ATL,Atlas,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
 2026,34,2026-ev-35,2026_game_35,508,2026-07-25 18:00:00+00:00,CAN,Cannons,CHA,Chaos,CAN,Cannons,CHA,Chaos,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
