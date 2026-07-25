@@ -30,9 +30,9 @@ season,game_number,slug,event_id,event_numeric_id,game_date_guess,away_team_id_r
 2026,29,2026-ev-30,2026_game_30,503,2026-07-18 18:00:00+00:00,CHA,Chaos,OUT,Outlaws,CHA,Chaos,OUT,Outlaws,8,10,3,3.0,final,event_list_endpoint,event_list_endpoint
 2026,30,2026-ev-31,2026_game_31,504,2026-07-18 20:30:00+00:00,ARC,Archers,WAT,Waterdogs,ARC,Archers,WAT,Waterdogs,18,8,3,3.0,final,event_list_endpoint,event_list_endpoint
 2026,31,2026-ev-32,2026_game_32,505,2026-07-19 19:00:00+00:00,ATL,Atlas,CAN,Cannons,ATL,Atlas,CAN,Cannons,13,15,3,3.0,final,event_list_endpoint,event_list_endpoint
-2026,32,2026-ev-33,2026_game_33,506,2026-07-25 00:00:00+00:00,ARC,Archers,OUT,Outlaws,ARC,Archers,OUT,Outlaws,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
-2026,33,2026-ev-34,2026_game_34,507,2026-07-25 02:30:00+00:00,WAT,Waterdogs,ATL,Atlas,WAT,Waterdogs,ATL,Atlas,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
-2026,34,2026-ev-35,2026_game_35,508,2026-07-25 18:00:00+00:00,CAN,Cannons,CHA,Chaos,CAN,Cannons,CHA,Chaos,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
+2026,32,2026-ev-33,2026_game_33,506,2026-07-25 00:00:00+00:00,ARC,Archers,OUT,Outlaws,ARC,Archers,OUT,Outlaws,16,11,3,3.0,final,event_list_endpoint,event_list_endpoint
+2026,33,2026-ev-34,2026_game_34,507,2026-07-25 02:30:00+00:00,WAT,Waterdogs,ATL,Atlas,WAT,Waterdogs,ATL,Atlas,11,10,3,3.0,final,event_list_endpoint,event_list_endpoint
+2026,34,2026-ev-35,2026_game_35,508,2026-07-25 18:00:00+00:00,CAN,Cannons,CHA,Chaos,CAN,Cannons,CHA,Chaos,12,13,3,3.0,final,event_list_endpoint,event_list_endpoint
 2026,35,2026-ev-36,2026_game_36,509,2026-07-25 22:30:00+00:00,WHP,Whipsnakes,ARC,Archers,WHP,Whipsnakes,ARC,Archers,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
 2026,36,2026-ev-20,2026_game_20,488,2026-07-26 01:00:00+00:00,WAT,Waterdogs,OUT,Outlaws,WAT,Waterdogs,OUT,Outlaws,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
 2026,37,2026-ev-37,2026_game_37,510,2026-07-31 22:00:00+00:00,RED,Redwoods,CHA,Chaos,RED,Redwoods,CHA,Chaos,0,0,0,0.0,scheduled,event_list_endpoint,event_list_endpoint
