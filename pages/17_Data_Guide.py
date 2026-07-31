@@ -163,6 +163,7 @@ with tab_rankings:
     # single-season context, which the limits tab shows in full.
     career = (profiles[profiles["ranking_context"] == "Career"]
               if "ranking_context" in profiles.columns else profiles)
+    ui.note_box("Comparing roles", scoring.RPS_NORMALIZATION_NOTE)
     ui.note_box(
         "Specialist compression",
         scoring.transfer_note(scoring.peer_sizes_from_mart(career), "the career view"),

@@ -532,6 +532,11 @@ else:
         "Overall": [
             "overall_rank", "position_rank", "full_name", "position", "role_group", "teams", "games",
             "overall_score", "peer_standing_score", "role_context_value_score", "role_value_tier",
+            # The cross-role scaled Role Score, since that is what Overall blends.
+            # The four raw per-role columns follow it: they are what the role views
+            # rank on, and showing only those here left the Overall score looking
+            # unrelated to any column beside it.
+            "role_primary_score_normalized",
             "offense_rps", "defense_rps", "faceoff_rps", "goalie_rps", "cross_role_impact",
             "points_per_game", "scoring_points_per_game", "goals_per_game",
             "one_point_goals_per_game", "two_point_goals_per_game", "assists_per_game",

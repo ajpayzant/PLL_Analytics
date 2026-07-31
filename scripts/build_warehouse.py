@@ -3777,6 +3777,95 @@ def _sigmoid_stretch(percentile_series):
     return result.clip(0, 100).where(p.notna(), np.nan)
 
 
+def _normalize_within_role(series, role_group, calibrate_mask=None,
+                           center=50.0, spread=32.5, clip_z=4.0):
+    """
+    Put each role's composite on a common median/IQR scale so roles are comparable.
+
+    A composite's ceiling is set by how redundant its inputs are, not by how good
+    its best player is. Averaging three faceoff stats that correlate at r=0.65 is
+    close to averaging one stat, so its leader reaches ~99; averaging eight
+    offensive stats correlating at r=0.37 is closer to averaging two, so a player
+    who is merely average at one of them cannot get there — the best attackman
+    tops out around 92. Measured on the 2026 board: Faceoff had 1.30 effective
+    independent components against Offense's 2.25, and RPS maxima of 98.9 vs 91.9
+    with medians of 52.0 vs 59.9.
+
+    That is an artefact of component count and correlation, and it was putting
+    specialists above attackmen on the cross-role board before a game was played.
+    It also contradicted the scale the app documents (`shared/scoring.py`: "each on
+    a 0-100 scale where 50 is league average for the ranking context"), which
+    per-role medians of 52-60 and maxima of 78-99 plainly were not.
+
+    Rescaling on the median and IQR fixes the comparison without touching the
+    formula: it is monotonic within a role, so every player's standing among their
+    own peers is unchanged (measured Spearman 0.997-1.000), and only the
+    cross-role scale moves. The IQR is used rather than the standard deviation for
+    the same reason the sigmoid path does — one outlier season should not stretch
+    the scale for everyone else.
+
+    `calibrate_mask` selects the players whose median and IQR set the scale
+    (pass the games-threshold mask): a role containing four one-game players would
+    otherwise let them define what "average" means. Their scores are still
+    computed, they just do not get a vote. `clip_z` bounds how far a genuine
+    outlier can travel, so a 1-of-1 faceoff man cannot land at 400.
+
+    `spread` is not a free tuning knob, and the role mix of the resulting top 25 is
+    the wrong thing to tune it against — picking the number that produces a
+    pleasing answer is how the artefact got here. It is fixed by the scale the
+    other two components already use. `_sigmoid_stretch` maps the 90th percentile
+    to 91.7, and the 90th percentile of a normal distribution is 1.282 standard
+    deviations above the median, so that curve is worth (91.7 - 50) / 1.282 = 32.5
+    points per standard deviation. Matching it keeps a weighted average honest: in
+    a blend, a component's real influence is its weight times its spread, so
+    scoring RPS at 12.5 per SD against a PSS at ~35 would give the nominal 0.60 RPS
+    weight less pull than the nominal 0.25 PSS weight.
+    """
+    s = pd.to_numeric(series, errors="coerce")
+    roles_ = pd.Series(role_group, index=s.index).astype("object")
+    if calibrate_mask is None:
+        calibrate_mask = pd.Series(True, index=s.index)
+    calibrate_mask = pd.Series(calibrate_mask, index=s.index).fillna(False).astype(bool)
+
+    out = pd.Series(np.nan, index=s.index, dtype="float64")
+    for _, idx in roles_.groupby(roles_, dropna=False).groups.items():
+        idx = list(idx)
+        vals = s.loc[idx]
+        basis = vals[calibrate_mask.loc[idx]].dropna()
+        # Too few qualified players to characterise a distribution: fall back to
+        # the whole role rather than calibrating on two rows.
+        if len(basis) < 5:
+            basis = vals.dropna()
+        if len(basis) < 2:
+            out.loc[idx] = vals
+            continue
+
+        med = float(basis.median())
+        q1, q3 = float(basis.quantile(0.25)), float(basis.quantile(0.75))
+        iqr = q3 - q1
+        if not np.isfinite(iqr) or np.isclose(iqr, 0.0):
+            out.loc[idx] = vals
+            continue
+
+        # 1.349 IQRs span one standard deviation for a normal distribution, so
+        # this reads as a z-score without inheriting the SD's outlier sensitivity.
+        z = ((vals - med) / (iqr / 1.349)).clip(-clip_z, clip_z)
+
+        # Logistic rather than `(center + spread * z).clip(0, 100)`. A linear map
+        # at this spread sends the top of a wide-tailed role past 100, and the clip
+        # then ties everyone above the ceiling — which silently destroys the order
+        # this function exists to preserve (it dropped within-role Spearman to
+        # 0.9991). The logistic is bounded and strictly increasing, so no player
+        # ever ties another and the top of a role compresses smoothly instead of
+        # hitting a wall. k = 4 * spread / 100 matches the linear slope at the
+        # median, so the scale still reads as `spread` points per SD in the middle,
+        # where nearly everyone sits.
+        k = 4.0 * spread / 100.0
+        out.loc[idx] = 100.0 / (1.0 + np.exp(-k * z))
+
+    return out.where(s.notna(), np.nan)
+
+
 def _minmax_score(series, higher_is_better=True):
     s = pd.to_numeric(series, errors="coerce")
     if s.notna().sum() == 0:
@@ -4374,6 +4463,22 @@ def _add_player_ranking_scores(df):
         mask = out["role_group"].eq(role_name)
         out.loc[mask, "role_primary_score"] = pd.to_numeric(out.loc[mask, col], errors="coerce")
 
+    # RPS on a common cross-role scale, for the all-player board only.
+    #
+    # Each role's RPS is a weighted average of a different number of differently
+    # correlated stats, so the raw numbers are not comparable between roles — see
+    # _normalize_within_role for the measurements. The role-specific views
+    # (offense_rps, defense_rps, faceoff_rps, goalie_rps, and the Goalie/Faceoff
+    # pages built on them) keep using the raw values: within a role the raw scale
+    # is the meaningful one, and normalising is monotonic there anyway. Only the
+    # cross-role Overall blend reads this column.
+    _rps_calibration_mask = pd.to_numeric(
+        out.get("eligible_for_default_ranking", pd.Series(1, index=out.index)),
+        errors="coerce").fillna(1).eq(1)
+    out["role_primary_score_normalized"] = _normalize_within_role(
+        out["role_primary_score"], out["role_group"],
+        calibrate_mask=_rps_calibration_mask)
+
     out = _add_test_style_role_separation(out)
 
     # Peer Standing Score (PSS): role_primary_score through sigmoid, ranked
@@ -4429,7 +4534,13 @@ def _add_player_ranking_scores(df):
     # Full goalie skill metrics remain available in goalie_score / role context.
     # These transfer-adjusted fields are used only for the all-player Overall
     # score calculation.
-    out["goalie_base_for_overall"] = out["base_impact_score"].copy()
+    # The goalie transfer is applied on top of the cross-role normalized RPS, since
+    # that is the scale the Overall blend reads. Compressing the raw goalie scale
+    # toward 50 and then comparing it against a differently-scaled offensive RPS
+    # would leave the artefact this normalization removes.
+    _rps_norm = pd.to_numeric(out["role_primary_score_normalized"],
+                              errors="coerce").clip(0, 100)
+    out["goalie_base_for_overall"] = _rps_norm.copy()
     out["goalie_role_context_for_overall"] = out["role_context_value_score"].copy()
     out["goalie_save_pct_for_overall"] = out["save_pct_score"].copy()
     out["goalie_saves_for_overall"] = out["saves_score"].copy()
@@ -4452,7 +4563,7 @@ def _add_player_ranking_scores(df):
     goalie_mask = out["role_group"].eq("Goalie")
     fo_mask = out["role_group"].eq("Faceoff")
 
-    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "base_impact_score"], goalie_rps_factor)
+    out.loc[goalie_mask, "goalie_base_for_overall"] = _transfer_toward_average(_rps_norm.loc[goalie_mask], goalie_rps_factor)
     out.loc[goalie_mask, "goalie_role_context_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "role_context_value_score"], goalie_ctx_factor)
     out.loc[goalie_mask, "goalie_save_pct_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "save_pct_score"], goalie_savepct_factor)
     out.loc[goalie_mask, "goalie_saves_for_overall"] = _transfer_toward_average(out.loc[goalie_mask, "saves_score"], goalie_saves_factor)
@@ -4468,9 +4579,13 @@ def _add_player_ranking_scores(df):
     #   Goalie:   0.70 RPS + 0.25 PSS + 0.05 CIS  (with specialist compression)
     _pss = pd.to_numeric(out.get("peer_standing_score", pd.Series(50.0, index=out.index)), errors="coerce").fillna(50.0)
     _cis = pd.to_numeric(out.get("cross_role_impact", pd.Series(50.0, index=out.index)), errors="coerce").fillna(50.0)
-    _rps_off = pd.to_numeric(out["offense_rps"], errors="coerce").fillna(50.0)
-    _rps_def = pd.to_numeric(out["defense_rps"], errors="coerce").fillna(50.0)
-    _rps_fo = pd.to_numeric(out["faceoff_rps"], errors="coerce").fillna(50.0)
+    # All three take the cross-role normalized RPS rather than the raw role column.
+    # role_primary_score_normalized already holds each player's own role's RPS, so
+    # one column serves every branch of the np.select below.
+    _rps_norm_blend = _rps_norm.fillna(50.0)
+    _rps_off = _rps_norm_blend
+    _rps_def = _rps_norm_blend
+    _rps_fo = _rps_norm_blend
     _rps_g_adj = pd.to_numeric(out["goalie_base_for_overall"], errors="coerce").fillna(50.0)
     _pss_adj_g = pd.to_numeric(out["goalie_role_context_for_overall"], errors="coerce").fillna(50.0)
 

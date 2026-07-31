@@ -493,6 +493,12 @@ _REGISTRY: list[Metric] = [
     _m("cross_role_impact", "Cross-Role Impact", UNIT_SCORE, HI, family="composite",
        definition="Contribution outside the player's primary role."),
     _m("role_primary_score", "Role Score", UNIT_SCORE, HI, family="composite"),
+    _m("role_primary_score_normalized", "Role Score (Cross-Role)", UNIT_SCORE, HI,
+       family="composite",
+       definition="Role Performance rescaled within the player's role so roles are "
+                  "comparable — 50 is that role's average. This is the version the "
+                  "Overall Score blends; the per-role Offense/Defense/Faceoff/Goalie "
+                  "scores are the unscaled originals."),
     _m("role_primary_percentile", "Role %ile", UNIT_PCT100, HI, family="composite"),
     _m("role_context_value_score", "Role Context Value", UNIT_SCORE, HI, family="composite"),
     _m("role_context_rank", "Role Rank", UNIT_INT, LO, family="composite"),

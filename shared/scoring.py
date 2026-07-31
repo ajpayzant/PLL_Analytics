@@ -26,13 +26,29 @@ from shared import roles
 
 # Component column names in marts.player_rankings, with the plain-English name
 # the pages show. RPS differs per role; PSS and CIS are shared.
+#
+# The Overall blend reads `role_primary_score_normalized` for every role, not the
+# per-role `offense_rps` / `defense_rps` / `faceoff_rps` columns. Those raw columns
+# are on incomparable scales — a role's composite ceiling is set by how correlated
+# its inputs are, so faceoff RPS peaked at 98.9 against offence's 91.9 for reasons
+# that have nothing to do with the players. The normalized column puts every role
+# on one median/IQR scale for the cross-role comparison; the raw columns still
+# drive the role-specific views, where the raw scale is the meaningful one.
 RPS_COLUMNS = {
+    roles.ROLE_OFFENSE: "role_primary_score_normalized",
+    roles.ROLE_DEFENSE: "role_primary_score_normalized",
+    roles.ROLE_FACEOFF: "role_primary_score_normalized",
+    # Goalies enter the cross-role ranking through a compressed version of the
+    # normalized RPS, not the raw one — see transfer_note().
+    roles.ROLE_GOALIE: "goalie_base_for_overall",
+}
+
+# The raw per-role RPS columns, for the views that rank inside a single role.
+RPS_COLUMNS_ROLE_VIEW = {
     roles.ROLE_OFFENSE: "offense_rps",
     roles.ROLE_DEFENSE: "defense_rps",
     roles.ROLE_FACEOFF: "faceoff_rps",
-    # Goalies enter the cross-role ranking through a compressed version of their
-    # RPS, not the raw one — see transfer_note().
-    roles.ROLE_GOALIE: "goalie_base_for_overall",
+    roles.ROLE_GOALIE: "goalie_rps",
 }
 
 PSS_COLUMN = "peer_standing_score"
@@ -184,6 +200,23 @@ CALIBRATION_NOTE = (
     "changes the order."
 )
 
+# Why the cross-role board rescales Role Performance before comparing roles.
+RPS_NORMALIZATION_NOTE = (
+    "Role Performance is rescaled within each role before roles are compared. A "
+    "composite's ceiling depends on how much its inputs overlap, not on how good "
+    "its best player is: faceoff performance is built from three closely related "
+    "stats (they correlate at about 0.65, so averaging them is close to averaging "
+    "one), which let its leader reach 98.9, while offensive performance is built "
+    "from eight looser ones (correlating at about 0.37) where a player who is "
+    "merely average at any single input cannot get there — the best attackman "
+    "topped out at 91.9. Left alone, that put specialists above attackmen for "
+    "reasons unrelated to how they played. Each role is now placed on a common "
+    "median-and-spread scale, so 50 is that role's average and a given score means "
+    "the same distance above average whichever role you are reading. The rescaling "
+    "is order-preserving inside a role, so no player moves relative to their own "
+    "peers, and the role-specific views are unaffected."
+)
+
 # What Role Performance is built from, per role. Sourced from the RPS blocks in
 # build_warehouse.py; shown so a reader can tell why a player scores as they do.
 RPS_INPUTS = {
@@ -199,12 +232,21 @@ RPS_INPUTS = {
     ],
 }
 
+# Bands with the share of the eligible pool each one actually holds. The previous
+# version labelled 85+ as "top ~10%" and 70–84 as "top ~25%", which the
+# distribution never supported: 85+ holds 0.6–1.6% across contexts and the 90th
+# percentile lands at 78–79, inside the band below. Descriptions now quote the
+# measured shares (2026, 2025 and Career all agree to about a point), so a reader
+# comparing a score against a tier gets the right idea of how rare it is.
 SCORE_TIERS = [
-    ("85+", "Elite", "Top ~10% of the role — a clear difference-maker."),
-    ("70–84", "High-End", "Top ~25% — reliably above the line."),
-    ("55–69", "Solid Starter", "Above average, performing the role well."),
-    ("45–54", "Average", "Close to league average for the role."),
-    ("Below 45", "Developmental", "Below average, or too few games to tell."),
+    ("85+", "Elite", "Top ~1% — the outright best in the league."),
+    ("70–84", "High-End", "Roughly the top quarter, and the 90th percentile "
+                          "sits in this band."),
+    ("55–69", "Solid Starter", "Above average, performing the role well "
+                               "(~20% of players)."),
+    ("45–54", "Average", "Close to league average for the context (~12%)."),
+    ("Below 45", "Developmental", "Below average, or too few games to tell "
+                                  "(~43%)."),
 ]
 
 # How Peer Standing is derived, which is not obvious from the weights alone.
@@ -228,7 +270,9 @@ def method_markdown(peer_sizes: dict | None = None,
     """
     lines = [
         "Each player's **Overall Score** blends three components, each on a 0–100 "
-        "scale where 50 is league average for the ranking context.",
+        "scale where 50 is league average for the ranking context — and, for Role "
+        "Performance, where 50 is the average *within the player's own role*, so "
+        "the three components are comparable before they are weighted.",
         "",
     ]
 
@@ -256,6 +300,8 @@ def method_markdown(peer_sizes: dict | None = None,
             f" + {cis:.0%} {COMPONENTS['cis'][0]}"
         )
     lines += [
+        "",
+        f"**Comparing roles.** {RPS_NORMALIZATION_NOTE}",
         "",
         f"**Specialist compression.** {transfer_note(peer_sizes, context)}",
         "",
