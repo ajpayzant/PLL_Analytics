@@ -488,11 +488,57 @@ _REGISTRY: list[Metric] = [
        definition="Transformed save-percentage input to the goalie composite, "
                   "clamped to a 0-85 band. Not a save percentage — read Save % instead."),
     _m("peer_standing_score", "Peer Standing", UNIT_SCORE, HI, family="composite",
-       definition="How far a player stands out from others in the same role group."),
+       definition="How far a player stands out from others in the same role group. "
+                  "A restatement of Role Performance as a rank, not a separate "
+                  "measurement — it does not feed the Overall Score."),
     _m("pss", "Peer Standing", UNIT_SCORE, HI, family="composite"),
     _m("cross_role_impact", "Cross-Role Impact", UNIT_SCORE, HI, family="composite",
-       definition="Contribution outside the player's primary role."),
+       definition="Possession volume, ground balls, passing and ball security, scored "
+                  "against the player's own role so 50 is average for the position. "
+                  "Measured within role because every possession stat is otherwise a "
+                  "proxy for where a player lines up."),
+    _m("cross_role_impact_raw", "Cross-Role Impact (Raw)", UNIT_SCORE, HI,
+       family="composite",
+       definition="Cross-Role Impact before it is centred within role. Higher for "
+                  "midfielders and defenders by position rather than by merit, which "
+                  "is why the centred version is the one that is blended."),
     _m("role_primary_score", "Role Score", UNIT_SCORE, HI, family="composite"),
+    _m("role_primary_score_before_two_way", "Role Score (Before Two-Way)",
+       UNIT_SCORE, HI, family="composite",
+       definition="Role Performance before two-way credit is added."),
+    _m("role_primary_score_before_shrink", "Role Score (Before Damping)",
+       UNIT_SCORE, HI, family="composite",
+       definition="Role Performance before small-sample damping. The gap to Role "
+                  "Score is what the game count costs a player in confidence."),
+    _m("two_way_credit", "Two-Way Credit", UNIT_NUM1, HI, family="composite",
+       definition="Extra Role Performance points (0-6) for production on the half of "
+                  "the field the player's role score ignores — points for a defender, "
+                  "caused turnovers for an attacker. Requires clearing an absolute "
+                  "per-game bar and playing most of the context's games."),
+    _m("is_two_way_player", "Two-Way", UNIT_INT, HI, family="composite",
+       definition="1 when a player earned meaningful two-way credit."),
+    _m("two_way_secondary_score", "Secondary-Side Score", UNIT_SCORE, HI,
+       family="composite",
+       definition="The player's standing within their own role on their secondary "
+                  "side of the field, which is what sizes the two-way credit."),
+    _m("two_way_defensive_activity_per_game", "Two-Way Def Activity", UNIT_NUM2, HI,
+       family="composite",
+       definition="Caused turnovers per game, the defensive axis of the two-way "
+                  "credit. Ground balls are excluded because Cross-Role Impact "
+                  "already pays every role for them."),
+    _m("two_way_min_games", "Two-Way Games Required", UNIT_INT, family="composite",
+       definition="Games needed in this ranking context before two-way credit is "
+                  "available — 70% of the context's longest sample, capped at 10."),
+    _m("discipline_score", "Discipline", UNIT_SCORE, HI, family="composite",
+       definition="Penalties conceded per game, scored so fewer is better. A small "
+                  "part of the defensive role score."),
+    _m("sample_trust", "Sample Trust", UNIT_NUM2, HI, family="composite",
+       definition="How much of a player's raw role score survives small-sample "
+                  "damping: 0.35 at one game rising to 1.00 at eight."),
+    _m("overall_score_at_scale_bound", "At Scale Bound", UNIT_INT, family="composite",
+       definition="1 when the Overall Score was clipped at 0 or 100, meaning the "
+                  "true blend fell outside the scale and the published number "
+                  "understates the distance to the next player."),
     _m("role_primary_score_normalized", "Role Score (Cross-Role)", UNIT_SCORE, HI,
        family="composite",
        definition="Role Performance rescaled within the player's role so roles are "
@@ -566,10 +612,62 @@ _REGISTRY: list[Metric] = [
        definition="The four style labels in one line: pace, offence, defence, "
                   "possession."),
 
+    # ---------- damped rates (scoring inputs) ----------
+    # Every rate here has a raw twin above, and the raw twin is what the tables show.
+    # These are the versions the ranking scores from: each is blended toward the
+    # league rate by an amount that depends on its own denominator, so a goalie with
+    # 20 shots faced or a shooter with 3 attempts cannot top a leaderboard on a
+    # sample that would not survive another week. The weight given to the league rate
+    # is set per stat from how many attempts that stat needs to become predictive —
+    # shooting stabilises slowly (25 shots), faceoff percentage quickly (20 draws).
+    _m("points_per_touch_shrunk", "Points/Touch (Damped)", UNIT_NUM2, HI,
+       family="playmaking",
+       definition="Points per touch, blended toward the league rate for small touch "
+                  "counts. The scoring input; Points/Touch is the real rate."),
+    _m("assists_per_touch_shrunk", "Assists/Touch (Damped)", UNIT_NUM2, HI,
+       family="playmaking",
+       definition="Assists per touch, damped for small touch counts."),
+    _m("assist_conv_rate_shrunk", "Assist Conv % (Damped)", UNIT_PCT01, HI,
+       family="playmaking",
+       definition="Assist conversion rate, damped for few assist opportunities."),
+    _m("turnovers_per_touch_shrunk", "TO/Touch (Damped)", UNIT_NUM2, LO,
+       family="possession",
+       definition="Turnovers per touch, damped for small touch counts."),
+    _m("shot_pct_shrunk", "Shot % (Damped)", UNIT_PCT01, HI, family="shooting",
+       definition="Shooting percentage, blended toward the league rate for small shot "
+                  "counts. Shooting needs about 25 attempts to mean anything, so a "
+                  "2-for-3 game is damped heavily."),
+    _m("sog_rate_shrunk", "SOG Rate (Damped)", UNIT_PCT01, HI, family="shooting",
+       definition="Shots on goal per shot, damped for small shot counts."),
+    _m("two_pt_conversion_shrunk", "2PT Conversion (Damped)", UNIT_PCT01, HI,
+       family="shooting",
+       definition="Two-point conversion rate, damped for few attempts — the rate "
+                  "most exposed to tiny denominators, since many players take only a "
+                  "handful of two-point shots all season."),
+    _m("faceoff_pct_shrunk", "FO Win % (Damped)", UNIT_PCT01, HI, family="faceoff",
+       definition="Faceoff win percentage, damped for few draws taken."),
+    _m("save_pct_shrunk", "Save % (Damped)", UNIT_PCT01, HI, family="goalie",
+       definition="Save percentage, blended toward the league rate for few shots "
+                  "faced. The scoring input; Save % is the real rate."),
+    _m("clean_save_rate_shrunk", "Clean Saves/Shot (Damped)", UNIT_PCT01, HI,
+       family="goalie",
+       definition="Clean save rate, damped for few shots faced."),
+
     # ---------- context / meta ----------
     _m("ranking_context", "Context", UNIT_TEXT, family="meta"),
     _m("ranking_context_type", "Context Type", UNIT_TEXT, family="meta"),
     _m("ranking_context_max_games", "Max GP", UNIT_INT, family="meta"),
+    # "Career" is not a career. The warehouse starts at 2022 and the league started
+    # in 2019, so the label overstates its own coverage; this column says what it
+    # really spans. Published as data rather than folded into the label because the
+    # label is a join key on six pages.
+    _m("ranking_context_season_span", "Seasons Covered", UNIT_TEXT, family="meta",
+       definition="The seasons this ranking context actually draws on. \"Career\" "
+                  "spans 2022 onward — the seasons in this warehouse — not the whole "
+                  "of league history, which began in 2019."),
+    _m("ranking_context_covers_full_history", "Full History", UNIT_INT, family="meta",
+       definition="1 when the context covers every season the league has played. "
+                  "Currently 0 for Career, which starts at 2022."),
     _m("ranking_formula_version", "Formula Version", UNIT_TEXT, family="meta"),
     _m("profile_context", "Context", UNIT_TEXT, family="meta"),
     _m("profile_context_type", "Context Type", UNIT_TEXT, family="meta"),

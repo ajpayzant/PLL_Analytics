@@ -527,6 +527,26 @@ else:
             f"{selected_ranking_context}. Players below the context's games minimum "
             "have less stable scores."
         )
+        st.caption(
+            "Each context is calibrated against its own pool, so a score is a "
+            "statement about standing *within this context* — comparing one player's "
+            "score across contexts is not a trend."
+        )
+
+    # The context selector says "Career", which reads as a whole career and is not
+    # one: the warehouse starts in 2022 and the league started in 2019. The label is
+    # a join key on six pages so it stays, and the span it really covers is stated
+    # here instead, read from the mart rather than hardcoded.
+    _span_col = "ranking_context_season_span"
+    if _span_col in context_rankings.columns:
+        _spans = context_rankings[_span_col].dropna().unique()
+        if len(_spans):
+            _full = pd.to_numeric(
+                context_rankings.get("ranking_context_covers_full_history"),
+                errors="coerce",
+            ).fillna(1).eq(1).all() if "ranking_context_covers_full_history" in context_rankings.columns else True
+            _tail = "" if _full else " — the league also played 2019–2021, which this warehouse does not hold."
+            st.caption(f"**{selected_ranking_context}** covers {_spans[0]}{_tail}")
 
     compact_cols_by_view = {
         "Overall": [
@@ -538,6 +558,9 @@ else:
             # unrelated to any column beside it.
             "role_primary_score_normalized",
             "offense_rps", "defense_rps", "faceoff_rps", "goalie_rps", "cross_role_impact",
+            # Two-way credit sits beside the role score it was added to, so a player
+            # scoring above their role's raw production has a visible reason.
+            "two_way_credit", "sample_trust",
             "points_per_game", "scoring_points_per_game", "goals_per_game",
             "one_point_goals_per_game", "two_point_goals_per_game", "assists_per_game",
             "shots_per_game", "touches_per_game", "caused_turnovers_per_game",
@@ -554,13 +577,19 @@ else:
             "points_per_game", "scoring_points_per_game", "one_point_goals_per_game",
             "two_point_goals_per_game", "goals_per_game", "assists_per_game",
             "assist_conv_rate", "shots_per_game", "points_per_touch",
+            # A midfielder's caused turnovers are what make them two-way.
+            "two_way_credit", "is_two_way_player", "caused_turnovers_per_game",
         ],
         "Defense": [
             "role_context_rank", "overall_rank", "position_rank", "full_name", "position", "teams", "games",
             "role_context_value_score", "overall_score", "defense_rps", "peer_standing_score",
-            "ct_score", "ground_ball_score",
+            "ct_score", "ground_ball_score", "discipline_score",
             "role_primary_score", "role_primary_percentile", "role_separation_score", "role_value_tier",
+            # A defender's points are why they might be a two-way player, so the
+            # credit belongs next to the offensive production that earned it.
+            "two_way_credit", "is_two_way_player",
             "caused_turnovers_per_game", "ground_balls_per_game", "turnovers_per_game",
+            "num_penalties_per_game",
             "touches_per_game", "points_per_game",
         ],
         "Faceoff": [
@@ -585,12 +614,22 @@ else:
         "role_robust_z", "role_adjusted_z", "role_group_size", "role_reliability",
         "offensive_score", "defensive_score", "faceoff_score", "goalie_score",
         "offense_rps", "defense_rps", "faceoff_rps", "goalie_rps",
-        "cross_role_impact", "peer_standing_score",
+        "cross_role_impact", "cross_role_impact_raw", "peer_standing_score",
         "usage_possession_score", "scoring_value_score", "playmaking_value_score",
         "ground_ball_score", "one_point_goal_score", "two_point_goal_score",
         "assist_conv_score", "two_pt_conv_score", "clean_save_rate_score",
+        "discipline_score",
         "shot_pct_for_ranking", "sog_rate_for_ranking", "goals_per_shot",
         "assist_conv_rate", "two_pt_conversion", "clean_save_rate",
+        # The workings behind the headline score: what two-way play and what the
+        # game count contributed, and the damped rates the scores were built on.
+        "two_way_credit", "is_two_way_player", "two_way_secondary_score",
+        "two_way_defensive_activity_per_game", "two_way_min_games",
+        "role_primary_score_before_two_way", "role_primary_score_before_shrink",
+        "sample_trust", "overall_score_at_scale_bound",
+        "points_per_touch_shrunk", "shot_pct_shrunk", "faceoff_pct_shrunk",
+        "save_pct_shrunk", "clean_save_rate_shrunk", "two_pt_conversion_shrunk",
+        "ranking_context_season_span",
     ]
 
     ranking_display_cols = compact_cols_by_view.get(ranking_view, compact_cols_by_view["Overall"])

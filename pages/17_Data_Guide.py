@@ -131,8 +131,9 @@ with tab_rankings:
                 else pd.DataFrame())
 
     st.markdown(
-        "**Overall Score** blends three components. Each is on a 0–100 scale where "
-        "50 is league average for the ranking context."
+        "**Overall Score** blends two components. Both are on a 0–100 scale where "
+        "50 is average *for the player's own role* in the ranking context, so the "
+        "two are comparable before they are weighted."
     )
 
     for key, (name, blurb) in scoring.COMPONENTS.items():
@@ -148,12 +149,10 @@ with tab_rankings:
         weights.rename(columns={
             "role_group": "Role",
             "role_performance": "Role Performance",
-            "peer_standing": "Peer Standing",
             "cross_role_impact": "Cross-Role Impact",
             "role_performance_inputs": "Role Performance is built from",
         }).style.format({
             "Role Performance": "{:.0%}",
-            "Peer Standing": "{:.0%}",
             "Cross-Role Impact": "{:.0%}",
         }),
         width="stretch", hide_index=True, height=190,
@@ -163,12 +162,17 @@ with tab_rankings:
     # single-season context, which the limits tab shows in full.
     career = (profiles[profiles["ranking_context"] == "Career"]
               if "ranking_context" in profiles.columns else profiles)
+    ui.note_box("Two-way players", scoring.TWO_WAY_NOTE)
+    ui.note_box("Small samples", scoring.SHRINKAGE_NOTE)
     ui.note_box("Comparing roles", scoring.RPS_NORMALIZATION_NOTE)
     ui.note_box(
         "Specialist compression",
         scoring.transfer_note(scoring.peer_sizes_from_mart(career), "the career view"),
     )
     ui.note_box("Scale calibration", scoring.CALIBRATION_NOTE)
+    ui.note_box("Do not compare scores across contexts",
+                scoring.CONTEXT_COMPARABILITY_NOTE)
+    ui.note_box("Peer Standing is shown but not scored", scoring.PSS_METHOD_NOTE)
 
     ui.section("Score tiers", "How to read a score at a glance.")
     st.dataframe(
@@ -336,6 +340,20 @@ with tab_limits:
         "A two-point goal is one goal and two scores. Any comparison of scoring "
         "needs to pick one and stay with it — the registry's labels say which is "
         "which, and the Glossary tab spells out both.",
+    )
+
+    ui.note_box(
+        "\"Career\" starts in 2022, not 2019",
+        "The league's first season was 2019; this warehouse holds 2022 onward. The "
+        "Career context is therefore a five-season window, not a full career, and it "
+        "undercounts anyone who debuted before 2022. Each ranking context carries a "
+        "`ranking_context_season_span` column saying exactly which seasons it draws "
+        "on.",
+    )
+
+    ui.note_box(
+        "A score means nothing outside its own context",
+        scoring.CONTEXT_COMPARABILITY_NOTE,
     )
 
     ui.note_box(

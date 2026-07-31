@@ -58,17 +58,29 @@ PSS_COLUMN_GOALIE = "goalie_role_context_for_overall"
 
 COMPONENTS = {
     "rps": ("Role Performance", "How well the player does their specific job."),
-    "pss": ("Peer Standing", "Where they rank among players in the same role."),
     "cis": ("Cross-Role Impact", "Contributions that count regardless of position "
-                                 "— ground balls, usage, ball security."),
+                                 "— possession volume, ground balls, passing, ball "
+                                 "security — measured against the player's own role, "
+                                 "so it adds to the role score instead of restating "
+                                 "the position."),
 }
 
-# (rps, pss, cis) weights per role. Mirrors build_warehouse.py's np.select.
+# (rps, cis) weights per role. Mirrors build_warehouse.py's np.select.
+#
+# Peer Standing used to be the second component at a flat 25%. It was dropped
+# because it was not independent information: it is Role Performance's own rank,
+# passed through a sigmoid, so it correlated with Role Performance at 0.99 and the
+# blend was in effect 85-90% one number wearing two hats. Removing it improved the
+# board against the only external check available — team-mean player score against
+# team wins rose from +0.577 to +0.625, and against score margin from +0.678 to
+# +0.743 over 40 team-seasons. `peer_standing_score` is still published and still
+# shown on the player pages, as a readable "where do they rank in their role"
+# figure; it no longer feeds the Overall Score.
 OVERALL_WEIGHTS = {
-    roles.ROLE_OFFENSE: (0.60, 0.25, 0.15),
-    roles.ROLE_DEFENSE: (0.65, 0.25, 0.10),
-    roles.ROLE_FACEOFF: (0.65, 0.25, 0.10),
-    roles.ROLE_GOALIE: (0.70, 0.25, 0.05),
+    roles.ROLE_OFFENSE: (0.85, 0.15),
+    roles.ROLE_DEFENSE: (0.90, 0.10),
+    roles.ROLE_FACEOFF: (0.90, 0.10),
+    roles.ROLE_GOALIE: (0.95, 0.05),
 }
 
 def transfer_note(peer_sizes: dict | None = None, context: str | None = None) -> str:
@@ -100,9 +112,13 @@ def transfer_note(peer_sizes: dict | None = None, context: str | None = None) ->
         + scale
         + "their role scores are compressed toward the league average before "
         "entering the all-player ranking. The compression eases as the season "
-        "lengthens (from 0.55 toward 0.70 of full value for goalie role "
+        "lengthens (from 0.62 toward 0.88 of full value for goalie role "
         "performance at ten games). Their dedicated views use uncompressed scores, "
-        "so a goalie's rank among goalies is unaffected."
+        "so a goalie's rank among goalies is unaffected. Goalies were previously "
+        "compressed hard enough that the best goalie in the league could not place "
+        "higher than 43rd overall — an artefact of the compression, not a judgement "
+        "about goalkeeping, since goalie play tracks team wins about as strongly as "
+        "any role. At the current setting an elite goalie can top the board."
     )
 
 
@@ -200,6 +216,36 @@ CALIBRATION_NOTE = (
     "changes the order."
 )
 
+# Why a short-sample player's score sits closer to average than their raw rates do.
+SHRINKAGE_NOTE = (
+    "A player's Role Performance is pulled toward their own role's median in "
+    "proportion to how few games they have played, reaching full value at eight "
+    "games and never dropping below 35% of the distance from the median. This is not "
+    "a penalty for missing time — it is what a short sample is actually worth as "
+    "evidence. Measured out of sample, a player's performance over their first few "
+    "games predicts the rest of their season at a slope of about 0.56, meaning a "
+    "two-game hot streak is roughly half signal and half noise, and the honest "
+    "estimate sits nearer average than the raw rate does. Rate stats are damped the "
+    "same way before they are scored: a goalie's save percentage on 20 shots is "
+    "blended toward the league rate, so 3-for-3 shooting no longer outranks a full "
+    "season of good finishing. The displayed rates are the real ones — only the "
+    "scoring uses the damped versions."
+)
+
+# Contexts are separately calibrated, which makes cross-context score arithmetic wrong.
+CONTEXT_COMPARABILITY_NOTE = (
+    "Each ranking context — Career, Last 10, Last 5, and each season — is scored and "
+    "calibrated independently, against its own pool and its own median. A score is "
+    "therefore a statement about a player's standing *inside that context*, and "
+    "differences across contexts are not a trend: a player at 71 in 2025 and 68 in "
+    "2026 has not necessarily declined, because the two 50s are different 50s and the "
+    "sample-size damping is looser in a completed season than a partial one. Compare "
+    "ranks within one context, or read the same context across players. The season "
+    "span each context covers is shown alongside it, and \"Career\" means 2022 "
+    "onward — the seasons in this warehouse, not the whole of league history, which "
+    "began in 2019."
+)
+
 # Why the cross-role board rescales Role Performance before comparing roles.
 RPS_NORMALIZATION_NOTE = (
     "Role Performance is rescaled within each role before roles are compared. A "
@@ -224,7 +270,13 @@ RPS_INPUTS = {
         "Points production", "Creation efficiency", "Assist conversion rate",
         "Shot quality", "2PT conversion",
     ],
-    roles.ROLE_DEFENSE: ["Caused turnovers", "Ground balls", "Ball security"],
+    # Weighted by measured effect on winning rather than evenly: caused turnovers
+    # carry roughly twice the weight of ground balls because they predict team score
+    # margin about twice as strongly. Discipline is small but real.
+    roles.ROLE_DEFENSE: [
+        "Caused turnovers (58%)", "Ground balls (20%)", "Ball security (15%)",
+        "Discipline — penalties against (7%)",
+    ],
     roles.ROLE_FACEOFF: ["Faceoff win %", "Total wins", "Volume"],
     roles.ROLE_GOALIE: [
         "Clean save rate (skill-based stops)", "Overall save %", "Volume",
@@ -249,13 +301,37 @@ SCORE_TIERS = [
                                   "(~43%)."),
 ]
 
-# How Peer Standing is derived, which is not obvious from the weights alone.
+# Peer Standing is still published and still shown; it is no longer an input.
 PSS_METHOD_NOTE = (
     "Peer Standing is a player's role-performance rank within their role group, "
     "passed through a sigmoid so 50 is the role average and 85+ is roughly the top "
     "10%. The underlying z-score uses the interquartile range rather than the "
     "standard deviation, so one outlier season cannot stretch the scale for "
-    "everyone else."
+    "everyone else. **It is a reading of Role Performance, not a separate "
+    "measurement**, and it no longer feeds the Overall Score: because it is that "
+    "same number re-expressed as a rank, the two correlate at about 0.99, so "
+    "weighting both counted one thing twice. It is kept on the player pages as a "
+    "plain answer to \"where do they sit among their peers\"."
+)
+
+# Two-way credit: how a player earns points for the half of the field their role
+# score ignores. Kept here so the pages describe the same rule the warehouse applies.
+TWO_WAY_NOTE = (
+    "A role score deliberately ignores half the field — Defense Role Performance "
+    "counts no points, Offense Role Performance counts no caused turnovers — which "
+    "left genuine two-way players unpaid for the part of their game that makes them "
+    "valuable. Players who produce on their secondary side now receive up to 6 extra "
+    "points of Role Performance. To qualify, a player must clear an absolute "
+    "per-game bar on that secondary side (0.89 points per game for a defender, 0.50 "
+    "caused turnovers per game for an attacker), stand above their own role's "
+    "average on it, and have played at least 70% of the games available in the "
+    "ranking context. The two bars differ because the production does: no "
+    "short-stick defensive midfielder has ever reached the midfield scoring average, "
+    "so one shared threshold made the credit unreachable in the defensive direction. "
+    "The credit is added rather than blended in, so a two-way midfielder's offensive "
+    "score is not diluted to make room for their defensive work — playing both ways "
+    "is extra value, so it is scored as extra. Ground balls are excluded from the "
+    "secondary axis because Cross-Role Impact already pays every role for them."
 )
 
 
@@ -269,10 +345,10 @@ def method_markdown(peer_sizes: dict | None = None,
     the same constants the score is verified against means there is one description.
     """
     lines = [
-        "Each player's **Overall Score** blends three components, each on a 0–100 "
-        "scale where 50 is league average for the ranking context — and, for Role "
-        "Performance, where 50 is the average *within the player's own role*, so "
-        "the three components are comparable before they are weighted.",
+        "Each player's **Overall Score** blends two components, each on a 0–100 "
+        "scale where 50 is league average for the ranking context — and both are "
+        "measured *within the player's own role*, so 50 means \"average for this "
+        "position\" in each and the two are comparable before they are weighted.",
         "",
     ]
 
@@ -284,28 +360,30 @@ def method_markdown(peer_sizes: dict | None = None,
             lines.append(f"- *{roles.role_label(role)}:* " + ", ".join(inputs))
     lines.append("")
 
-    for slot in ("pss", "cis"):
-        number = 2 if slot == "pss" else 3
-        name, blurb = COMPONENTS[slot]
-        lines.append(f"**{number}. {name}** — {blurb}")
-        if slot == "pss":
-            lines.append(f"- {PSS_METHOD_NOTE}")
-        lines.append("")
+    cis_name, cis_blurb = COMPONENTS["cis"]
+    lines += [f"**2. {cis_name}** — {cis_blurb}", ""]
 
     lines.append("**Weights by role:**")
-    for role, (rps, pss, cis) in OVERALL_WEIGHTS.items():
+    for role, (rps, cis) in OVERALL_WEIGHTS.items():
         lines.append(
             f"- *{roles.role_label(role)}:* {rps:.0%} {COMPONENTS['rps'][0]}"
-            f" + {pss:.0%} {COMPONENTS['pss'][0]}"
             f" + {cis:.0%} {COMPONENTS['cis'][0]}"
         )
     lines += [
+        "",
+        f"**Two-way players.** {TWO_WAY_NOTE}",
+        "",
+        f"**Small samples.** {SHRINKAGE_NOTE}",
         "",
         f"**Comparing roles.** {RPS_NORMALIZATION_NOTE}",
         "",
         f"**Specialist compression.** {transfer_note(peer_sizes, context)}",
         "",
         f"**Scale calibration.** {CALIBRATION_NOTE}",
+        "",
+        f"**Comparing across contexts.** {CONTEXT_COMPARABILITY_NOTE}",
+        "",
+        f"**Peer Standing.** {PSS_METHOD_NOTE}",
     ]
     return "\n".join(lines)
 
@@ -452,11 +530,10 @@ def verify_style_overall(df: pd.DataFrame, tolerance: float = 0.01) -> dict:
 def weights_frame() -> pd.DataFrame:
     """The overall-score weights as a display table."""
     rows = []
-    for role, (rps, pss, cis) in OVERALL_WEIGHTS.items():
+    for role, (rps, cis) in OVERALL_WEIGHTS.items():
         rows.append({
             "role_group": roles.role_label(role),
             "role_performance": rps,
-            "peer_standing": pss,
             "cross_role_impact": cis,
             "role_performance_inputs": ", ".join(RPS_INPUTS.get(role, [])),
         })
@@ -487,13 +564,12 @@ def rebuild_overall_score(df: pd.DataFrame) -> pd.Series:
 
     cis = numeric(CIS_COLUMN)
     out = pd.Series(np.nan, index=df.index)
-    for role_key, (w_rps, w_pss, w_cis) in OVERALL_WEIGHTS.items():
+    for role_key, (w_rps, w_cis) in OVERALL_WEIGHTS.items():
         mask = role == role_key
         if not mask.any():
             continue
         rps = numeric(RPS_COLUMNS[role_key])
-        pss = numeric(PSS_COLUMN_GOALIE if role_key == roles.ROLE_GOALIE else PSS_COLUMN)
-        out.loc[mask] = (w_rps * rps + w_pss * pss + w_cis * cis).loc[mask]
+        out.loc[mask] = (w_rps * rps + w_cis * cis).loc[mask]
     return out.clip(0, 100)
 
 

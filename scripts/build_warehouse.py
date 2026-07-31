@@ -3952,6 +3952,260 @@ def _normalize_within_role(series, role_group, calibrate_mask=None,
     return out.where(s.notna(), np.nan)
 
 
+# Games at which a composite score is trusted at (roughly) full weight.
+#
+# Measured, not chosen. Scoring each player on their first k games of a season and
+# regressing that against a score built on their *remaining* games gives the
+# empirically optimal shrink factor directly — it is the slope of that regression,
+# because regression to the mean is exactly what the slope measures:
+#
+#     k games   out-of-sample r   optimal shrink
+#        2           0.537            0.556
+#        3           0.592            0.616
+#        4           0.598            0.605
+#        5           0.627            0.630
+#        6           0.622            0.616
+#
+# Two lessons. First, the curve plateaus near 0.62 rather than climbing to 1.0 —
+# a full-season composite is still only ~62% signal, so shrinking a 10-game score
+# hard would be over-correcting for noise that a 10-game sample does not have.
+# Second, the *tails* are where small samples actually lie. Splitting first-5-game
+# scores into bands and looking at where each band lands over the rest of the year:
+#
+#     first-5 band   n     mean first 5   mean rest
+#        85+         31        90.3          78.6
+#        75-85       57        80.3          69.7
+#        60-75       69        66.8          57.8
+#        <60        274        35.3          41.1
+#
+# An 85+ on five games is a ~79 the rest of the way; a sub-60 is a 41. Both tails
+# collapse inward by 10-12 points while the sample is thin. So the correction
+# belongs on the deviation from average, which is what shrinkage does, and it
+# should be substantial at 1-3 games and nearly absent by 8-10.
+#
+# GAMES_FOR_FULL_TRUST = 8 with a floor of 0.35 reproduces that: 1 game keeps 35%
+# of the deviation, 3 games 52%, 5 games 71%, 8+ games 100%. Deliberately NOT
+# shrinking a full-season score toward 50 — the plateau above says the 10-game
+# number is as good as this data gets, and the context median shift already
+# handles the absolute level.
+GAMES_FOR_FULL_TRUST = 8
+MIN_SAMPLE_TRUST = 0.35
+
+
+def _sample_trust(games, full_trust_games=GAMES_FOR_FULL_TRUST,
+                  floor=MIN_SAMPLE_TRUST):
+    """
+    Fraction of a player's deviation from average to keep, given their game count.
+
+    Linear from `floor` at one game to 1.0 at `full_trust_games`, then flat. See
+    GAMES_FOR_FULL_TRUST for the measurements behind both constants.
+    """
+    g = pd.to_numeric(games, errors="coerce").fillna(0).clip(lower=0)
+    ramp = floor + (1.0 - floor) * (g / float(full_trust_games)).clip(0, 1)
+    return ramp.clip(floor, 1.0)
+
+
+def _shrink_to_average(series, games, center=50.0,
+                       full_trust_games=GAMES_FOR_FULL_TRUST,
+                       floor=MIN_SAMPLE_TRUST):
+    """
+    Pull a 0-100 score toward `center` in proportion to how few games back it.
+
+    A six-game career and a sixty-game career produced the same score before this:
+    corr(games, overall_score) was 0.181 and seven of the top 25 had fewer than
+    seven games, including the all-time #1 on six career games. This does not
+    penalise a short career — it declines to claim a six-game player is the best
+    in the league, which is a different statement.
+    """
+    s = pd.to_numeric(series, errors="coerce")
+    trust = _sample_trust(games, full_trust_games, floor).reindex(s.index)
+    return (center + trust * (s - center)).clip(0, 100).where(s.notna(), np.nan)
+
+
+def _reliable_rate(numerator, denominator, min_denominator, prior=None,
+                   index=None):
+    """
+    Rate stat with a denominator-scaled prior — an empirical-Bayes shrunk rate.
+
+    Raw ratios on tiny denominators are noise wearing a precise-looking number.
+    Measured split-half reliability of the rates this system scores, alongside the
+    median denominator each one actually gets:
+
+        rate                split-half r    median denom
+        faceoff_pct             0.757            large
+        clean_save_rate         0.625            large
+        points_per_touch        0.470             37
+        turnovers_per_touch     0.192             37
+        sog_rate                0.054              4
+        two_pt_conversion       0.037              1
+        assist_conv_rate        0.017              2
+        shot_pct               -0.038              4
+
+    The bottom four are indistinguishable from random: 57% of player-seasons have
+    fewer than 10 shots, 74% fewer than 10 assist opportunities, 95% fewer than 10
+    two-point shots. A 1-for-1 two-point shooter scored a perfect two-point
+    conversion. Adding `min_denominator` phantom attempts at the league rate makes
+    a player earn their way off the average — one make in one attempt lands just
+    above league average instead of at the ceiling, while a 40-shot season is
+    barely moved.
+    """
+    num = pd.to_numeric(numerator, errors="coerce")
+    den = pd.to_numeric(denominator, errors="coerce")
+    if index is None:
+        index = num.index
+    num = num.reindex(index)
+    den = den.reindex(index)
+
+    valid = num.notna() & den.notna() & den.gt(0)
+    if prior is None:
+        # League rate from the pooled totals, which is the correct prior for a
+        # ratio: it weights players by how much they actually attempted.
+        total_den = float(den[valid].sum())
+        prior = float(num[valid].sum()) / total_den if total_den > 0 else np.nan
+
+    if not np.isfinite(prior):
+        return pd.Series(np.nan, index=index, dtype="float64")
+
+    m = float(min_denominator)
+    shrunk = (num + m * prior) / (den + m)
+    return shrunk.where(valid, np.nan)
+
+
+# Two-way credit: the most a player can add to their RPS for genuine production
+# on the side of the ball their role score ignores, and the gate they must clear.
+#
+# Sizing comes from the overlap in the data. Per-game means by listed position
+# (2022+, 5+ games) show the two axes are close to disjoint:
+#
+#     pos    n    points/g   CT/g   GB/g
+#     A    131      2.77     0.16   1.39
+#     M    201      1.57     0.12   0.97
+#     SSDM 132      0.30     0.41   1.25
+#     LSM   75      0.27     0.75   2.14
+#     D    135      0.11     0.86   1.77
+#
+# Only 14% of midfield seasons clear the SSDM median on defensive production, and
+# *zero* SSDM seasons clear the midfield median on points. So this cannot be a
+# symmetric cross-role comparison — judged against midfielders, no defender would
+# ever earn offensive credit and that half of the feature would be dead on arrival.
+#
+# Each player is therefore scored within their own role (an SSDM's offence measured
+# against other SSDMs, where the spread is real: median 0.20 points/g, p90 0.60,
+# max 1.33) and separately *gated* on absolute production against the pool that
+# owns the axis. The within-role scoring is what makes the credit reachable; the
+# absolute gate is what stops the best-of-a-weak-pool from qualifying on noise.
+#
+# THE GATES ARE ASYMMETRIC because the two distributions are not mirror images. A
+# single shared percentile cannot serve both directions — at the 40th percentile,
+# 14% of offensive players clear the defensive gate while only 0.6% of defenders
+# clear the offensive one. Calibrated instead to equal selectivity, ~4% each way,
+# measured over all 2022+ player-seasons with 5+ games:
+#
+#     defender earning offensive credit:  >= 0.89 points/g  (Offense pool p10)
+#                                         -> 13 of 342 defender-seasons qualify
+#     offensive earning defensive credit: >= 0.50 CT/g      (Defense pool p40)
+#                                         -> 13 of 332 offensive-seasons qualify
+#
+# THE GATES ARE ABSOLUTE CONSTANTS, not percentiles recomputed per context. This
+# matters: computing them per context made the bar move with the pool, and the
+# thinner contexts have softer pools. The Offense p10 of points/game came out at
+# 0.50 in Career, 0.29 in the 2026 season and 0.20 in Last 5, so the share of
+# defenders qualifying drifted from 10% to 19% to 38% — the same player earned
+# two-way credit or not depending on which view you were looking at, and in Last 5
+# more than a third of all defenders were "two-way". Per-game rates are directly
+# comparable across contexts, so a fixed threshold is both simpler and correct.
+#
+# The defensive axis is caused turnovers ALONE, not caused turnovers plus ground
+# balls. Ground balls are already credited to every role by Cross-Role Impact, so
+# including them here would pay an offensive player twice for one recovery, and CT
+# is also the stat that actually separates defenders (standardized beta +0.219 on
+# score margin against +0.121 for ground balls once faceoff men are excluded).
+#
+# The players this finds: Zach Currier (M, 0.75 CT/g in 2026, six times the
+# midfield median) whose Offense RPS counted none of his defending; Jeff Trainor
+# and Ian MacKay (SSDM, 1.0-1.3 points/g, five times the SSDM median) whose Defense
+# RPS counted none of their offence. And who it now correctly excludes: Ryan
+# Terefenko (0.57 points/g, 0 caused turnovers) and Aidan Maguire (0.75 points/g),
+# both of whom cleared a drifting per-context gate on production that is ordinary
+# for the position.
+#
+# Capped at 6 points because it is a supplement to a role score, not a second role
+# score. 6 points is about a third of the gap between the median and the top of a
+# role — enough to move a genuine two-way player up meaningfully, not enough to let
+# defensive production outrank being an elite attackman.
+TWO_WAY_MAX_CREDIT = 6.0
+TWO_WAY_GATE_POINTS_PER_GAME = 0.89   # defender must reach this to earn offensive credit
+TWO_WAY_GATE_CT_PER_GAME = 0.50       # attacker must reach this to earn defensive credit
+
+# Two-way play is a claim about season-long deployment, so it needs a real sample —
+# more than the ranking board's own games threshold, which is deliberately permissive
+# (4 games in 2026) so that fringe players still appear somewhere on the list.
+# A share of the context's own length rather than a flat number, because the contexts
+# are different lengths: 70% is 7 of 10 games in a season view and 4 of 5 in Last 5.
+# Capped at 10 so the Career context, where the longest career sets the maximum, does
+# not demand 30-odd games and exclude everyone still playing.
+TWO_WAY_MIN_GAMES_SHARE = 0.70
+TWO_WAY_MIN_GAMES_CAP = 10
+
+
+def _two_way_min_games(max_games_in_context):
+    """Games a player needs before two-way credit is available to them."""
+    m = float(max_games_in_context or 0)
+    if m <= 0:
+        return 0
+    return int(min(np.ceil(TWO_WAY_MIN_GAMES_SHARE * m), TWO_WAY_MIN_GAMES_CAP))
+
+
+def _two_way_credit(secondary_score, secondary_raw, games, gate, eligible=None,
+                    max_credit=TWO_WAY_MAX_CREDIT):
+    """
+    Bounded, additive credit for real production on a player's secondary axis.
+
+    `secondary_score` is the player's 0-100 standing on that axis *within their own
+    role*; `secondary_raw` is their absolute per-game production on it; `gate` is
+    the fixed absolute threshold they must reach. Returns 0 for anyone who fails the
+    gate, and is shrunk by game count so a one-game outlier cannot buy the bonus.
+
+    Additive rather than blended into the role weights on purpose: a two-way
+    midfielder should not have their offensive score diluted to make room for
+    defensive credit. Playing both ways is extra value, so it is scored as extra.
+    """
+    sec = pd.to_numeric(secondary_score, errors="coerce")
+    raw = pd.to_numeric(secondary_raw, errors="coerce")
+
+    if sec.notna().sum() == 0 or not np.isfinite(gate):
+        return pd.Series(0.0, index=sec.index, dtype="float64")
+
+    # Size the credit on within-role standing, with the absolute gate as a pass/fail
+    # requirement rather than a second sliding scale.
+    #
+    # An earlier version also ramped the credit by how far past the gate a player
+    # was, as a multiple of the gate. That silently capped the defensive half of the
+    # feature: a defender needs 0.89 points/game to qualify, so full credit would
+    # have required 1.78 — and the highest any defender has ever managed is 1.33. No
+    # defender could ever have earned more than half credit, which is exactly the
+    # asymmetry the two separate gates exist to correct. It also inverted the ordering
+    # it was meant to refine, paying a 4-game midfielder more than the league's
+    # actual two-way midfielder because a short sample produces a higher rate.
+    above = ((sec - 50.0) / 50.0).clip(0, 1).fillna(0.0)
+
+    credit = max_credit * above
+    credit = credit.where(raw.fillna(-np.inf) >= float(gate), 0.0)
+
+    # Two-way play is a claim about how a player is deployed, and three games cannot
+    # support it. Without this, the top two-way "midfielders" were Ty English on 4
+    # games and Adam Charalambides on 1 — a single game with one caused turnover
+    # reads as 1.00 CT/game, double the gate — while Zach Currier, the actual
+    # two-way midfielder in the league, ranked below them. See _two_way_min_games for
+    # the bar; _sample_trust then scales what remains.
+    if eligible is not None:
+        gate_mask = pd.Series(eligible, index=credit.index).fillna(False).astype(bool)
+        credit = credit.where(gate_mask, 0.0)
+
+    trust = _sample_trust(games).reindex(credit.index).fillna(0.0)
+    return (credit * trust).fillna(0.0)
+
+
 def _minmax_score(series, higher_is_better=True):
     s = pd.to_numeric(series, errors="coerce")
     if s.notna().sum() == 0:
@@ -4121,16 +4375,29 @@ def _score_metric(series, higher_is_better=True, percentile_weight=0.35):
     return _sigmoid_stretch(pct).where(s.notna(), np.nan)
 
 
-def _weighted_available_score(df, weights, fallback=np.nan):
+def _weighted_available_score(df, weights, fallback=np.nan, neutral=None):
     """
-    Weighted row score that ignores missing component columns/values.
+    Weighted row score tolerant of missing component columns/values.
 
-    Only uses the components that are actually present for each row —
-    weights are renormalized so a missing component doesn't pull the score
-    toward 50. If all components are missing, returns fallback (default NaN).
+    `neutral` decides what a missing component means. With `neutral=None` (the
+    default) the remaining weights are renormalized, which is right when the
+    component is missing because it is *inapplicable* — a goalie has no faceoff
+    percentage, and pretending it is average would be worse than ignoring it.
+
+    Pass `neutral=50.0` when a missing component instead means the player did not
+    do the thing, because renormalizing then hands out a silent bonus. Measured on
+    the current mart: `two_pt_conv_score` is absent for 41% of offensive rows and
+    `assist_conv_score` for 7%. A player with no two-point attempts had their other
+    seven weights scaled up by 1/0.98, so *not attempting* was scored identically to
+    attempting at exactly their own average — and strictly better than attempting
+    and missing. Substituting 50 makes a non-attempt read as "no evidence, assume
+    average", which is what it is.
+
+    If every component is missing, returns `fallback` (default NaN).
     """
     score = pd.Series(0.0, index=df.index, dtype="float64")
     weight_sum = pd.Series(0.0, index=df.index, dtype="float64")
+    any_valid = pd.Series(False, index=df.index)
 
     for col, weight in weights.items():
         if isinstance(col, pd.Series):
@@ -4141,11 +4408,22 @@ def _weighted_available_score(df, weights, fallback=np.nan):
             continue
 
         valid = vals.notna()
-        if valid.any():
+        any_valid |= valid
+
+        if neutral is not None:
+            # Every listed component keeps its full weight; absent values take the
+            # neutral level rather than redistributing their weight to the others.
+            filled = vals.fillna(float(neutral))
+            score += filled * float(weight)
+            weight_sum += float(weight)
+        elif valid.any():
             score.loc[valid] += vals.loc[valid] * float(weight)
             weight_sum.loc[valid] += float(weight)
 
     out = score / weight_sum.replace(0, np.nan)
+    if neutral is not None:
+        # A row with no component at all present is unscored, not average.
+        out = out.where(any_valid, np.nan)
 
     if fallback is not None and not (isinstance(fallback, float) and pd.isna(fallback)):
         out = out.fillna(float(fallback))
@@ -4288,6 +4566,53 @@ def _add_player_ranking_scores(df):
     touches_pg = pd.to_numeric(out["touches_per_game"], errors="coerce")
     shots_pg = pd.to_numeric(out["shots_per_game"], errors="coerce")
 
+    # Season/career totals, which are the denominators these rates deserve. The
+    # per-game forms above divide two averages and so carry no information about
+    # how many attempts stood behind them — a 1-for-1 two-point shooter and a
+    # 20-for-40 shooter both arrived as a bare ratio.
+    _tot = {}
+    for name in ("touches", "shots", "shots_on_goal", "goals", "points", "assists",
+                 "turnovers", "faceoffs", "faceoffs_won", "assist_opportunities",
+                 "two_point_goals", "two_point_shots", "saves", "clean_saves",
+                 "goals_against"):
+        _tot[name] = pd.to_numeric(
+            out.get(name, pd.Series(np.nan, index=out.index)), errors="coerce")
+
+    # Prior strength per rate, in phantom attempts at the league rate. Each is set
+    # against that rate's measured reliability — solving n/(n+m) = reliability at
+    # the rate's own median denominator gives the m that matches observed noise:
+    #
+    #   rate              split-half r   median denom   implied m   used
+    #   faceoff_pct           0.757           large        ~2         20
+    #   clean_save_rate       0.625            89          27         30
+    #   points_per_touch      0.470            71          40         40
+    #   turnovers_per_touch   0.192            71         150         60
+    #   sog_rate              0.054            10          87         20
+    #   two_pt_conversion     0.037             2          26         10
+    #   assist_conv_rate      0.017             5         145         15
+    #   shot_pct             -0.038            10           inf       25
+    #
+    # Held below the implied value wherever the implied one is enormous. An
+    # implied m of infinity says shot percentage carries no repeatable signal at
+    # all, and the honest response to that is to stop scoring it rather than to
+    # shrink it to a constant — but its weight is small (0.05) and its face
+    # validity high, so it is shrunk firmly and left in. faceoff_pct is shrunk at
+    # m=20 despite implying ~2: real specialists take 200+ faceoffs a season so it
+    # barely moves them, while it stops a midfielder who won his only draw from
+    # scoring a perfect faceoff rate.
+    RATE_PRIOR = {
+        "points_per_touch": 40.0, "assists_per_touch": 40.0,
+        "turnovers_per_touch": 60.0, "goals_per_shot": 25.0,
+        "sog_rate": 20.0, "faceoff_pct": 20.0, "save_pct": 40.0,
+        "clean_save_rate": 30.0, "assist_conv": 15.0, "two_pt_conv": 10.0,
+    }
+
+    # The raw ratios stay exactly as they were: the Rankings, Leaderboards and
+    # Profiles pages display these columns as the player's actual shot percentage
+    # and faceoff percentage, and a shrunk value under a "FO Win %" header would be
+    # a lie about what the player did. Shrinkage applies to the `_shrunk` twins
+    # below, which only the scorers read. Display shows what happened; scoring uses
+    # what is repeatable.
     out["points_per_touch"] = np.where(
         touches_pg > 0,
         pd.to_numeric(out["points_per_game"], errors="coerce") / touches_pg,
@@ -4321,6 +4646,34 @@ def _add_player_ranking_scores(df):
         / pd.to_numeric(out["two_point_shots"], errors="coerce").replace(0, np.nan)
     )
 
+    # Shrunk twins — scoring inputs only.
+    out["points_per_touch_shrunk"] = _reliable_rate(
+        _tot["points"], _tot["touches"], RATE_PRIOR["points_per_touch"],
+        index=out.index)
+    out["assists_per_touch_shrunk"] = _reliable_rate(
+        _tot["assists"], _tot["touches"], RATE_PRIOR["assists_per_touch"],
+        index=out.index)
+    out["turnovers_per_touch_shrunk"] = _reliable_rate(
+        _tot["turnovers"], _tot["touches"], RATE_PRIOR["turnovers_per_touch"],
+        index=out.index)
+    out["shot_pct_shrunk"] = _reliable_rate(
+        _tot["goals"], _tot["shots"], RATE_PRIOR["goals_per_shot"], index=out.index)
+    out["sog_rate_shrunk"] = _reliable_rate(
+        _tot["shots_on_goal"], _tot["shots"], RATE_PRIOR["sog_rate"], index=out.index)
+    out["faceoff_pct_shrunk"] = _reliable_rate(
+        _tot["faceoffs_won"], _tot["faceoffs"], RATE_PRIOR["faceoff_pct"],
+        index=out.index)
+
+    # Shots faced, the denominator for both goalie rates. `saa` is not present in
+    # every context, so it is rebuilt from the parts.
+    _goalie_faced = _tot["saves"].fillna(0) + _tot["goals_against"].fillna(0)
+    _goalie_faced = _goalie_faced.where(_goalie_faced > 0, np.nan)
+    out["save_pct_shrunk"] = _reliable_rate(
+        _tot["saves"], _goalie_faced, RATE_PRIOR["save_pct"], index=out.index)
+    out["two_pt_conversion_shrunk"] = _reliable_rate(
+        _tot["two_point_goals"], _tot["two_point_shots"],
+        RATE_PRIOR["two_pt_conv"], index=out.index)
+
     # ------------------------------------------------------------------
     # Phase 2 derived fields.
     # ------------------------------------------------------------------
@@ -4351,6 +4704,14 @@ def _add_player_ranking_scores(df):
         np.nan,
     )
 
+    # Shrunk twins for the two remaining scored rates.
+    out["assist_conv_rate_shrunk"] = _reliable_rate(
+        _tot["assists"], _tot["assist_opportunities"], RATE_PRIOR["assist_conv"],
+        index=out.index)
+    out["clean_save_rate_shrunk"] = _reliable_rate(
+        _tot["clean_saves"], _goalie_faced, RATE_PRIOR["clean_save_rate"],
+        index=out.index)
+
     # Assist opportunities per game
     out["assist_opp_per_game"] = np.where(
         pd.to_numeric(out.get("games", pd.Series(0, index=out.index)), errors="coerce") > 0,
@@ -4377,7 +4738,7 @@ def _add_player_ranking_scores(df):
     out["touches_score_global"] = _score_metric(out["touches_per_game"], True)
     out["passes_score_global"] = _score_metric(out["total_passes_per_game"], True)
     out["ground_ball_score_global"] = _score_metric(out["ground_balls_per_game"], True)
-    out["turnover_security_score"] = _score_metric(out["turnovers_per_touch"], False)
+    out["turnover_security_score"] = _score_metric(out["turnovers_per_touch_shrunk"], False)
 
     # Role-peer scores — each metric scored within role group only
     out["points_score"] = _role_metric_score(out, "points_per_game", True)
@@ -4388,26 +4749,43 @@ def _add_player_ranking_scores(df):
     out["assists_score"] = _role_metric_score(out, "assists_per_game", True)
     out["shots_score"] = _role_metric_score(out, "shots_per_game", True)
     out["sog_score"] = _role_metric_score(out, "shots_on_goal_per_game", True)
-    out["shot_pct_score"] = _role_metric_score(out, "shot_pct_calc", True)
+    out["shot_pct_score"] = _role_metric_score(out, "shot_pct_shrunk", True)
     out["ct_score"] = _role_metric_score(out, "caused_turnovers_per_game", True)
-    out["two_point_goal_efficiency_score"] = _role_metric_score(out, "two_point_goal_pct_calc", True)
-    out["points_per_touch_score"] = _role_metric_score(out, "points_per_touch", True)
-    out["assists_per_touch_score"] = _role_metric_score(out, "assists_per_touch", True)
+    out["two_point_goal_efficiency_score"] = _role_metric_score(out, "two_pt_conversion_shrunk", True)
+    out["points_per_touch_score"] = _role_metric_score(out, "points_per_touch_shrunk", True)
+    out["assists_per_touch_score"] = _role_metric_score(out, "assists_per_touch_shrunk", True)
 
     # Specialist metrics — only meaningful within their own role group
-    out["faceoff_pct_score"] = _role_metric_score(out, "faceoff_pct_for_ranking", True)
+    out["faceoff_pct_score"] = _role_metric_score(out, "faceoff_pct_shrunk", True)
     out["faceoff_volume_score"] = _role_metric_score(out, "faceoffs_per_game", True)
     out["faceoff_wins_score"] = _role_metric_score(out, "faceoffs_won_per_game", True)
-    out["save_pct_score"] = _role_metric_score(out, "save_pct_for_ranking", True)
+    out["save_pct_score"] = _role_metric_score(out, "save_pct_shrunk", True)
     out["saves_score"] = _role_metric_score(out, "saves_per_game", True)
     out["goals_against_score"] = _role_metric_score(out, "goals_against_per_game", False)
     out["scores_against_score"] = _role_metric_score(out, "scores_against_per_game", False)
 
     # Phase 2 new metric scores (role-peer)
-    out["assist_conv_score"] = _role_metric_score(out, "assist_conv_rate", True)
-    out["two_pt_conv_score"] = _role_metric_score(out, "two_pt_conversion", True)
-    out["clean_save_rate_score"] = _role_metric_score(out, "clean_save_rate", True)
+    out["assist_conv_score"] = _role_metric_score(out, "assist_conv_rate_shrunk", True)
+    out["two_pt_conv_score"] = _role_metric_score(out, "two_pt_conversion_shrunk", True)
+    out["clean_save_rate_score"] = _role_metric_score(out, "clean_save_rate_shrunk", True)
     out["assist_opp_score"] = _role_metric_score(out, "assist_opp_per_game", True)
+
+    # Discipline — penalties conceded per game, scored within role because a
+    # close defender and an attackman are not policed for the same things.
+    # `num_penalties` was collected at player level and never scored; Piper Bond
+    # took 6 penalties in 10 games with no effect on his rating.
+    _pen_pg = pd.to_numeric(
+        out.get("num_penalties_per_game", pd.Series(np.nan, index=out.index)),
+        errors="coerce")
+    if _pen_pg.isna().all():
+        _games_for_pen = pd.to_numeric(out.get("games", pd.Series(np.nan, index=out.index)),
+                                       errors="coerce")
+        _pen_pg = (pd.to_numeric(out.get("num_penalties", pd.Series(np.nan, index=out.index)),
+                                 errors="coerce")
+                   / _games_for_pen.replace(0, np.nan))
+    out["penalties_per_game_for_ranking"] = _pen_pg
+    out["discipline_score"] = _role_metric_score(
+        out, "penalties_per_game_for_ranking", higher_is_better=False)
 
     # Role-peer usage for blending
     out["touches_score_role"] = _role_metric_score(out, "touches_per_game", True)
@@ -4483,7 +4861,13 @@ def _add_player_ranking_scores(df):
     #   CIS  = cross-role impact (global contributions)
     # ------------------------------------------------------------------
 
-    # Offense RPS: points production + creation + shot quality
+    # Offense RPS: points production + creation + shot quality.
+    #
+    # `neutral=50.0` is the fix for the silent-reweighting bug. two_pt_conv_score is
+    # absent for 41% of offensive rows and assist_conv_score for 7%; renormalizing
+    # meant a player who never attempted a two-pointer had their other seven weights
+    # scaled up, scoring the same as attempting at their own average and strictly
+    # better than attempting and missing. Absent now reads as average.
     out["offense_rps"] = _weighted_available_score(out, {
         "points_score": 0.28,
         "scoring_points_score": 0.18,
@@ -4493,14 +4877,43 @@ def _add_player_ranking_scores(df):
         "shots_score": 0.08,
         "shot_pct_score": 0.05,
         "two_pt_conv_score": 0.02,
-    })
+    }, neutral=50.0)
 
-    # Defense RPS: disruption + possession recovery
+    # Defense RPS: disruption + possession recovery + discipline.
+    #
+    # Reweighted against measured impact rather than intuition. Aggregating player
+    # production to team-seasons (n=40) and correlating with score margin per game:
+    #
+    #     stat                  all players   excl. faceoff men   defenders only
+    #     ground balls/g          +0.357           +0.467             +0.121
+    #     caused turnovers/g      +0.152           +0.155             +0.219
+    #     turnovers/g             -0.152           -0.187             -0.161
+    #
+    # Ground balls look like the strongest team-level signal, but that signal is
+    # largely *possession*, not defence: faceoff specialists alone account for 22%
+    # of a team's ground balls, and once you restrict to actual defenders the ground
+    # ball correlation collapses to +0.121 while caused turnovers rises to +0.219.
+    # Against team scores-against per game — the outcome a defender is supposed to
+    # influence — defenders' ground balls come in at -0.120 and caused turnovers at
+    # +0.097, both weak, neither favouring ground balls.
+    #
+    # So ground balls fall from 0.30 to 0.20: they are real value, but they are
+    # possession value that CIS already credits for every role, and inside the
+    # Defense score they were the second-largest term on the weakest evidence.
+    # Caused turnovers rise to 0.58 as the one stat that discriminates defenders.
+    #
+    # Discipline enters at 0.07. Penalties conceded is a genuine repeatable player
+    # trait — year-over-year r across four season pairs is 0.30, 0.38, 0.39, 0.27,
+    # in the same range as caused turnovers — and it was collected at player level
+    # and never used. Kept small: it is a real trait but a minor share of defending,
+    # and team penalty volume does not correlate negatively with margin (+0.134), so
+    # weighting it heavily would be punishing aggression the data does not condemn.
     out["defense_rps"] = _weighted_available_score(out, {
-        "ct_score": 0.55,
-        "ground_ball_score": 0.30,
+        "ct_score": 0.58,
+        "ground_ball_score": 0.20,
         "turnover_security_score": 0.15,
-    })
+        "discipline_score": 0.07,
+    }, neutral=50.0)
 
     # Faceoff RPS: winning possessions
     out["faceoff_rps"] = _weighted_available_score(out, {
@@ -4527,12 +4940,66 @@ def _add_player_ranking_scores(df):
     out["goalie_score"] = out["goalie_rps"]
     out["goalie_score_raw"] = out["goalie_rps"]
 
-    # Cross-Role Impact Score (CIS) — global contributions all players make
-    out["cross_role_impact"] = _weighted_available_score(out, {
-        "ground_ball_score_global": 0.45,
-        "touches_score_global": 0.35,
-        "turnover_security_score": 0.20,
-    })
+    # Cross-Role Impact Score (CIS) — global contributions all players make.
+    #
+    # Rebalanced to stop double counting. CIS is supposed to be the role-neutral
+    # pillar, but two of its three components were already inside Defense RPS, so a
+    # defender was paid twice for the same play while an attackman was paid once:
+    #
+    #     ground balls    0.65 x 0.30 + 0.10 x 0.45 = 0.240 of a defender's score
+    #     ball security   0.65 x 0.15 + 0.10 x 0.20 = 0.118 of a defender's score
+    #
+    # The consequence was visible in the output: CIS medians spanned 21 points
+    # across roles, which is a role bonus, not a cross-role measure.
+    #
+    # Touches becomes the primary term because it is the one genuinely universal
+    # contribution and by far the most reliable stat in the dataset (split-half
+    # r = 0.949, against 0.836 for ground balls and 0.577 for caused turnovers).
+    # Ground balls stay in at a reduced 0.25 — they are legitimately cross-role, and
+    # the Defense weight above came down at the same time, so the combined share for
+    # a defender drops from 0.240 to 0.155. Passing volume joins at 0.15 as a second
+    # possession contribution that no role score counts, which dilutes the remaining
+    # overlap rather than concentrating it.
+    out["cross_role_impact_raw"] = _weighted_available_score(out, {
+        "touches_score_global": 0.45,
+        "ground_ball_score_global": 0.25,
+        "passes_score_global": 0.15,
+        "turnover_security_score": 0.15,
+    }, neutral=50.0)
+
+    # Then centred within role, which is the part that makes it role-neutral in
+    # fact rather than only in intent.
+    #
+    # Reweighting the components alone did not fix the role tilt, and measuring the
+    # inputs shows why it cannot: every globally-scored possession stat is itself
+    # a near-perfect proxy for position. Median global score by role, 2026:
+    #
+    #     component                  Def   FO    G     Off    spread
+    #     touches_score_global      22.8  25.5  60.9  79.8     57.0
+    #     ground_ball_score_global  58.0  97.7  64.6  30.5     67.2
+    #     passes_score_global       26.5  17.1  68.7  77.2     60.1
+    #     turnover_security_score   50.8   3.4  88.3  50.0     84.9
+    #
+    # A close defender handles the ball a third as often as an attackman because of
+    # where he stands, not because he contributes less. So any weighted average of
+    # these lands a defender ~27 points below an attackman before either plays, and
+    # no choice of weights avoids it — my first attempt at this actually widened the
+    # role spread from 16.7 to 28.6 while making each individual component more
+    # defensible. The component weights were never the problem.
+    #
+    # Centring within role keeps the question CIS is good at ("does this player
+    # contribute more possession value than others in his position?") and drops the
+    # one it was answering by accident ("does this player's position touch the ball
+    # a lot?"). It matters because Overall Score is RPS_normalized + CIS, and
+    # RPS_normalized is already role-centred by design — leaving CIS role-tilted
+    # meant it silently re-imposed a role bonus that no weight in this file chose
+    # and that the Data Guide does not document.
+    out["cross_role_impact"] = _normalize_within_role(
+        out["cross_role_impact_raw"], out["role_group"],
+        calibrate_mask=pd.to_numeric(
+            out.get("eligible_for_default_ranking", pd.Series(1, index=out.index)),
+            errors="coerce").fillna(1).eq(1),
+        spread=20.0)
 
     # ------------------------------------------------------------------
     # Role context = RPS as role_primary_score + peer separation.
@@ -4548,6 +5015,124 @@ def _add_player_ranking_scores(df):
     for role_name, col in role_rps_map.items():
         mask = out["role_group"].eq(role_name)
         out.loc[mask, "role_primary_score"] = pd.to_numeric(out.loc[mask, col], errors="coerce")
+
+    # ------------------------------------------------------------------
+    # Two-way credit.
+    #
+    # A role score by construction ignores half the field: Defense RPS counts no
+    # points, so Jeff Trainor's 1.0 points/game as an SSDM — five times the SSDM
+    # median — earned him nothing, and Offense RPS counts no ground balls or caused
+    # turnovers, so Zach Currier's 7.1 recoveries/game as a midfielder, triple the
+    # SSDM median, earned him nothing either. Both are two-way players and the
+    # system was blind to the half of their game that made them one.
+    #
+    # Each player is scored on their secondary axis *within their own role* and must
+    # additionally clear the 40th percentile of the role that owns that axis in
+    # absolute per-game terms. See _two_way_credit for why both conditions are
+    # needed: cross-role comparison alone makes the credit unreachable for
+    # defenders (zero SSDM seasons reach the midfield points median), and within-role
+    # comparison alone would hand a bonus to whoever tops a pure specialist pool's
+    # noise. Goalies and faceoff specialists are excluded — their secondary
+    # production is a function of their position, not two-way play.
+    # ------------------------------------------------------------------
+    # Games-threshold players define each role's centre, so a pool full of
+    # one-game call-ups cannot drag the median the shrinkage aims at.
+    _rps_eligible_for_center = pd.to_numeric(
+        out.get("eligible_for_default_ranking", pd.Series(1, index=out.index)),
+        errors="coerce").fillna(1).eq(1)
+
+    _off_axis = pd.to_numeric(out.get("points_per_game", pd.Series(np.nan, index=out.index)),
+                              errors="coerce")
+    # Caused turnovers only — ground balls are already paid to every role by CIS.
+    _def_axis = pd.to_numeric(
+        out.get("caused_turnovers_per_game", pd.Series(np.nan, index=out.index)),
+        errors="coerce")
+    out["two_way_defensive_activity_per_game"] = _def_axis
+
+    _is_off = out["role_group"].eq("Offense")
+    _is_def = out["role_group"].eq("Defense")
+
+    # Within-role standing on the secondary axis.
+    _off_players_def_score = _role_metric_score(
+        out, "two_way_defensive_activity_per_game", higher_is_better=True)
+    out["two_way_secondary_score"] = np.nan
+    _def_players_off_score = _role_metric_score(out, "points_per_game", higher_is_better=True)
+
+    _games_for_two_way = pd.to_numeric(out.get("games", pd.Series(0, index=out.index)),
+                                       errors="coerce").fillna(0)
+
+    # The board's own games threshold is too low to support a two-way claim, so the
+    # credit sets its own, higher bar. Without it the top two-way "midfielders" in
+    # 2026 were 4-game players, and in Last 5 a 2-game player, ahead of Zach Currier.
+    _two_way_games_floor = _two_way_min_games(
+        float(_games_for_two_way.max()) if len(_games_for_two_way) else 0)
+    out["two_way_min_games"] = _two_way_games_floor
+    _two_way_eligible = _rps_eligible_for_center & _games_for_two_way.ge(_two_way_games_floor)
+
+    out["two_way_credit"] = 0.0
+
+    # Offensive players earning defensive credit, gated on the Defense pool's CT.
+    if _is_off.any() and _is_def.any():
+        out.loc[_is_off, "two_way_credit"] = _two_way_credit(
+            _off_players_def_score.loc[_is_off],
+            _def_axis.loc[_is_off],
+            _games_for_two_way.loc[_is_off],
+            gate=TWO_WAY_GATE_CT_PER_GAME,
+            eligible=_two_way_eligible.loc[_is_off],
+        ).values
+        out.loc[_is_off, "two_way_secondary_score"] = _off_players_def_score.loc[_is_off].values
+
+        # Defensive players earning offensive credit. A different absolute gate:
+        # see TWO_WAY_GATE_POINTS_PER_GAME for why the two directions cannot
+        # share one threshold.
+        out.loc[_is_def, "two_way_credit"] = _two_way_credit(
+            _def_players_off_score.loc[_is_def],
+            _off_axis.loc[_is_def],
+            _games_for_two_way.loc[_is_def],
+            gate=TWO_WAY_GATE_POINTS_PER_GAME,
+            eligible=_two_way_eligible.loc[_is_def],
+        ).values
+        out.loc[_is_def, "two_way_secondary_score"] = _def_players_off_score.loc[_is_def].values
+
+    out["two_way_credit"] = pd.to_numeric(out["two_way_credit"], errors="coerce").fillna(0.0)
+    out["is_two_way_player"] = out["two_way_credit"].gt(1.0).astype(int)
+
+    # The credit is added before normalization so it competes on the raw role scale
+    # the rest of the role's distribution lives on.
+    out["role_primary_score_before_two_way"] = out["role_primary_score"].copy()
+    out["role_primary_score"] = (
+        pd.to_numeric(out["role_primary_score"], errors="coerce") + out["two_way_credit"]
+    ).clip(0, 100)
+
+    # ------------------------------------------------------------------
+    # Sample-size shrinkage.
+    #
+    # Applied to the role score, before normalization and before it feeds Peer
+    # Standing, so one correction covers every downstream use instead of being
+    # bolted onto the final number. corr(games, overall_score) was 0.181 with seven
+    # of the top 25 under seven games; an 85+ score built on five games was worth
+    # ~79 over the rest of the season, and a sub-60 was worth 41 — both tails
+    # collapse inward while the sample is thin, which is what this removes.
+    #
+    # Shrinking toward the role's own median rather than a flat 50: the role scales
+    # differ (that is why _normalize_within_role exists), so 50 is not the average
+    # of every role's raw RPS, and pulling a defender toward a number that is not
+    # his pool's centre would be a role adjustment wearing a sample-size label.
+    # ------------------------------------------------------------------
+    out["role_primary_score_before_shrink"] = out["role_primary_score"].copy()
+    _shrunk_rps = pd.to_numeric(out["role_primary_score"], errors="coerce")
+    for _, _idx in out.groupby("role_group", dropna=False).groups.items():
+        _idx = list(_idx)
+        _vals = _shrunk_rps.loc[_idx]
+        _basis = _vals[_rps_eligible_for_center.loc[_idx]].dropna()
+        if len(_basis) < 5:
+            _basis = _vals.dropna()
+        if len(_basis) < 2:
+            continue
+        _shrunk_rps.loc[_idx] = _shrink_to_average(
+            _vals, _games_for_two_way.loc[_idx], center=float(_basis.median())).values
+    out["role_primary_score"] = _shrunk_rps
+    out["sample_trust"] = _sample_trust(_games_for_two_way)
 
     # RPS on a common cross-role scale, for the all-player board only.
     #
@@ -4568,18 +5153,30 @@ def _add_player_ranking_scores(df):
     out = _add_test_style_role_separation(out)
 
     # Peer Standing Score (PSS): role_primary_score through sigmoid, ranked
-    # *within role group* — the definition both the Data Guide and the Player
-    # Rankings page give ("where they rank among players in the same role").
+    # *within role group* — "where they rank among players in the same role".
     #
-    # This used to rank role_primary_score across the whole league in one pool.
-    # That is not a peer standing, and it is not even a coherent ranking: each
-    # role's RPS is a weighted average of a different number of differently
-    # correlated components, so the scales are not comparable. A faceoff RPS is
-    # built from 3 stats that correlate at r=0.65 (≈1.3 effective stats), so its
-    # leader averages ~99; an offensive RPS is built from 8 stats correlating at
-    # r=0.37 (≈2.25 effective stats), so even the best attackman is merely good
-    # at something and averages ~92. Pooling those put every specialist above
-    # every attackman before a single game was played.
+    # PUBLISHED FOR DISPLAY ONLY. It is no longer a term in the Overall Score, and
+    # the reason is that it never functioned as one. PSS is a monotone transform of
+    # a within-role ranking of RPS, and RPS is the other component, so the two carry
+    # the same ordering by construction. Measured on the shipped mart, in all eight
+    # role-by-context pairs:
+    #
+    #     Spearman(RPS, PSS) = 1.0000        (every role, every context)
+    #     Pearson(RPS_normalized, PSS) = 0.982 - 0.998
+    #
+    # A "three-component blend" whose second component cannot reorder the first is a
+    # two-component blend that describes itself inaccurately: the real split was
+    # ~85% role performance and 10-15% cross-role impact. So the 0.25 is folded back
+    # into RPS, which is where it was already going. This changes no player's rank
+    # relative to another within a role; it makes the published weights honest and
+    # stops the tiny nonlinear disagreement between the two scales (Pearson < 1)
+    # from acting as unexplained jitter in the final number.
+    #
+    # This block used to rank role_primary_score across the whole league in one
+    # pool. That is not a peer standing, and it was not even a coherent ranking:
+    # each role's RPS is a weighted average of a different number of differently
+    # correlated components, so the scales are not comparable. Pooling them put
+    # every specialist above every attackman before a single game was played.
     out["peer_standing_score"] = np.nan
     for _, idx in out.groupby("role_group", dropna=False).groups.items():
         idx = list(idx)
@@ -4638,7 +5235,23 @@ def _add_player_ranking_scores(df):
     max_games_in_ctx = float(out["games"].max()) if len(out) else 0
     sample_factor = float(np.clip(max_games_in_ctx / 10.0, 0.15, 1.0))
 
-    goalie_rps_factor = 0.55 + 0.15 * sample_factor   # 0.55 early → 0.70 full
+    # Goalie compression eased on measured impact.
+    #
+    # The compression was calibrated to stop a small goalie pool from flooding the
+    # top of the board, which is a real risk, but it was set so hard that no goalie
+    # could reach the top at all: the best goalie ranked 43rd of 161 in 2026 and
+    # 60th of 314 all-time. That is not a defensible ceiling for the position. Save
+    # percentage carries a standardized beta of +0.574 on team score margin against
+    # +0.586 for scoring — goalkeeping is as close to winning as offence is — and
+    # goalie mean score has the second-strongest correlation with team wins of any
+    # role (+0.463, behind only offence).
+    #
+    # 0.70 -> 0.88 at full sample keeps a deliberate discount, because a goalie's
+    # save percentage is partly his defence's shot quality and this data cannot
+    # separate the two, but it lets an elite goalie into the top 15 instead of
+    # capping him outside the top 40. The early-season end stays aggressive (0.55 ->
+    # 0.62): the pool is 8-15 goalies and one hot week should not lead the league.
+    goalie_rps_factor = 0.62 + 0.26 * sample_factor   # 0.62 early → 0.88 full
     goalie_ctx_factor = 0.30 + 0.20 * sample_factor   # 0.30 early → 0.50 full
     goalie_savepct_factor = 0.45 + 0.25 * sample_factor  # 0.45 early → 0.70 full
     goalie_saves_factor = 0.45 + 0.25 * sample_factor    # 0.45 early → 0.70 full
@@ -4658,12 +5271,14 @@ def _add_player_ranking_scores(df):
     out["fo_role_context_for_overall"] = out["role_context_value_score"].copy()
     out.loc[fo_mask, "fo_role_context_for_overall"] = _transfer_toward_average(out.loc[fo_mask, "role_context_value_score"], fo_ctx_factor)
 
-    # 3-component overall formula per role:
-    #   Offense:  0.60 RPS + 0.25 PSS + 0.15 CIS
-    #   Defense:  0.65 RPS + 0.25 PSS + 0.10 CIS
-    #   Faceoff:  0.65 RPS + 0.25 PSS + 0.10 CIS
-    #   Goalie:   0.70 RPS + 0.25 PSS + 0.05 CIS  (with specialist compression)
-    _pss = pd.to_numeric(out.get("peer_standing_score", pd.Series(50.0, index=out.index)), errors="coerce").fillna(50.0)
+    # 2-component overall formula per role, after folding the redundant Peer
+    # Standing term into Role Performance (see the PSS block above — Spearman with
+    # RPS was exactly 1.0000 in all eight role-by-context pairs, so it could not
+    # reorder anything):
+    #   Offense:  0.85 RPS + 0.15 CIS
+    #   Defense:  0.90 RPS + 0.10 CIS
+    #   Faceoff:  0.90 RPS + 0.10 CIS
+    #   Goalie:   0.95 RPS + 0.05 CIS  (with specialist compression)
     _cis = pd.to_numeric(out.get("cross_role_impact", pd.Series(50.0, index=out.index)), errors="coerce").fillna(50.0)
     # All three take the cross-role normalized RPS rather than the raw role column.
     # role_primary_score_normalized already holds each player's own role's RPS, so
@@ -4673,7 +5288,6 @@ def _add_player_ranking_scores(df):
     _rps_def = _rps_norm_blend
     _rps_fo = _rps_norm_blend
     _rps_g_adj = pd.to_numeric(out["goalie_base_for_overall"], errors="coerce").fillna(50.0)
-    _pss_adj_g = pd.to_numeric(out["goalie_role_context_for_overall"], errors="coerce").fillna(50.0)
 
     out["overall_score_raw"] = np.select(
         [
@@ -4683,10 +5297,10 @@ def _add_player_ranking_scores(df):
             out["role_group"].eq("Goalie"),
         ],
         [
-            0.60 * _rps_off + 0.25 * _pss + 0.15 * _cis,
-            0.65 * _rps_def + 0.25 * _pss + 0.10 * _cis,
-            0.65 * _rps_fo + 0.25 * _pss + 0.10 * _cis,
-            0.70 * _rps_g_adj + 0.25 * _pss_adj_g + 0.05 * _cis,
+            0.85 * _rps_off + 0.15 * _cis,
+            0.90 * _rps_def + 0.10 * _cis,
+            0.90 * _rps_fo + 0.10 * _cis,
+            0.95 * _rps_g_adj + 0.05 * _cis,
         ],
         default=out["base_impact_score"],
     )
@@ -4713,6 +5327,16 @@ def _add_player_ranking_scores(df):
             out["overall_score_context_shift"] = 0.0
     else:
         out["overall_score_context_shift"] = 0.0
+
+    # Flag the players the 0-100 clip flattened. Six players sat at exactly 0.0 in
+    # the shipped mart, which reads as a measured score and is really "this player
+    # is somewhere at or below the bottom of the scale" — they are not tied, the
+    # scale simply ran out. Published so the pages can mark them rather than
+    # presenting a clip as a measurement.
+    _pre_clip = pd.to_numeric(out.get("overall_score", pd.Series(np.nan, index=out.index)),
+                              errors="coerce")
+    out["overall_score_at_scale_bound"] = (
+        _pre_clip.le(0.0) | _pre_clip.ge(100.0)).fillna(False).astype(int)
 
     out["overall_score"] = pd.to_numeric(out["overall_score"], errors="coerce").clip(0, 100)
 
@@ -4745,6 +5369,31 @@ def _build_player_ranking_context(df, context_type, context_label, sort_order):
     out["ranking_context_type"] = context_type
     out["ranking_context"] = context_label
     out["ranking_sort_order"] = sort_order
+
+    # What "Career" actually spans.
+    #
+    # The PLL began in 2019 but this warehouse holds 2022-2026, so the Career
+    # context is a five-year window presented as a career total: Brett Dobson shows
+    # 45 games, Marcus Holman 49, and Lyle Thompson — a founding player with a
+    # decade in the league — shows 9. Anyone reading "Career" as career is being
+    # misled about players whose best years predate the data.
+    #
+    # Published as a column rather than folded into the label, because
+    # `ranking_context == "Career"` is a join key in six pages and renaming the value
+    # would break every one of them. The pages show this span next to the label; the
+    # honest fix upstream is to scrape 2019-2021, at which point this string
+    # updates itself from the data.
+    _ctx_seasons = pd.to_numeric(out.get("season", pd.Series(dtype="float64")),
+                                 errors="coerce").dropna()
+    if context_type == "Career" and "seasons_played_list" in out.columns:
+        _ctx_seasons = pd.Series(dtype="float64")
+    if len(_ctx_seasons):
+        _lo, _hi = int(_ctx_seasons.min()), int(_ctx_seasons.max())
+    else:
+        _lo, _hi = int(min(TARGET_SEASONS)), int(max(TARGET_SEASONS))
+    out["ranking_context_season_span"] = (
+        f"{_lo}" if _lo == _hi else f"{_lo}–{_hi}")
+    out["ranking_context_covers_full_history"] = int(_lo <= 2019)
     out["ranking_context_sort"] = sort_order
     out["max_games_in_context"] = max_games
     out["ranking_context_max_games"] = max_games
