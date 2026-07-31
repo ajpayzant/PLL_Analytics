@@ -1,35 +1,36 @@
+"""
+Compare Teams — two to four teams side by side, on offence and defence.
+
+The sidebar filters are not requested: this page picks its own teams, context and
+season in the main panel, and the old preamble rendered four global controls that
+none of the queries below ever read.
+
+The Last 5 / Last 10 contexts read `marts.team_last5_stats`, the league-wide "last
+games played anywhere" mart. For teams that currently resolves to 2026 for all
+eight, so nothing was being misreported — but the context could not be pointed at
+any other season, which made "how did these two look over their last five in 2023"
+unanswerable. Both now read the season-scoped marts and take a season.
+"""
+
+from __future__ import annotations
+
 import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from shared.db import query_df, table_exists, filter_values
+from shared import page as P
+from shared.db import query_df, table_exists
 from shared.ui import (
-    apply_css, safe_bar_chart, display_table, display_comparison_matrix,
-    fmt_value, pretty_col, profile_summary_cards
+    safe_bar_chart, display_comparison_matrix, pretty_col,
+    profile_summary_cards,
 )
-from shared.filters import render_sidebar_filters
 
-st.set_page_config(page_title="Compare Teams · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
+ctx = P.init_page(
+    "Compare Teams",
+    "Compare teams across multi-year profile, current form, season trends, and "
+    "head-to-head splits.",
+)
 
-import os
-from shared.db import DB_PATH
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-st.subheader("Compare Teams")
-st.markdown('<div class="section-note">Compare teams across multi-year profile, current form, season trends, and head-to-head splits.</div>', unsafe_allow_html=True)
-
-team_options = teams_df["team_name"].dropna().tolist()
+seasons = ctx.seasons
+team_options = ctx.team_names
 
 selected_compare_teams = st.multiselect(
     "Select 2–4 teams",
@@ -41,7 +42,7 @@ selected_compare_teams = st.multiselect(
 if len(selected_compare_teams) < 2:
     st.info("Select at least two teams to compare.")
 else:
-    team_ids = teams_df[teams_df["team_name"].isin(selected_compare_teams)]["team_id"].tolist()
+    team_ids = ctx.team_ids_for(selected_compare_teams)
     placeholders = ", ".join(["?"] * len(team_ids))
 
     team_context = st.radio(
@@ -73,25 +74,29 @@ else:
             ORDER BY c.scores_per_game DESC NULLS LAST
         """, team_ids)
 
-    elif team_context == "Last 5":
+    elif team_context in ("Last 5", "Last 10"):
+        # Season-scoped so the window can be pointed at any season, not just
+        # whichever games happen to be the most recent in the warehouse.
+        form_season = st.selectbox(
+            "Season for the form window",
+            options=seasons,
+            index=ctx.season_default_index(),
+            key="team_compare_form_season",
+            help="Both teams' windows come from this season.",
+        )
+        form_table = ("marts.team_season_last5_stats" if team_context == "Last 5"
+                      else "marts.team_season_last10_stats")
         compare_df = query_df(f"""
-            SELECT * FROM marts.team_last5_stats
-            WHERE team_id IN ({placeholders})
+            SELECT * FROM {form_table}
+            WHERE team_id IN ({placeholders}) AND season = ?
             ORDER BY scores_per_game DESC NULLS LAST
-        """, team_ids)
-
-    elif team_context == "Last 10":
-        compare_df = query_df(f"""
-            SELECT * FROM marts.team_last10_stats
-            WHERE team_id IN ({placeholders})
-            ORDER BY scores_per_game DESC NULLS LAST
-        """, team_ids)
+        """, team_ids + [form_season])
 
     else:
         selected_compare_season = st.selectbox(
             "Season",
             options=seasons,
-            index=len(seasons) - 1,
+            index=ctx.season_default_index(),
             key="team_compare_season"
         )
         compare_df = query_df(f"""
@@ -149,6 +154,11 @@ else:
             """, team_ids + [selected_compare_season])
 
         else:
+            # Same window as the offensive matrix above, including the season, so
+            # the two halves of the page describe the same games. Without the
+            # season predicate this ranked the whole game log and the defensive
+            # figures silently came from a different stretch than the offensive
+            # ones once a season was chosen.
             n_games = 5 if team_context == "Last 5" else 10
             defense_compare_df = query_df(f"""
                 WITH ranked AS (
@@ -158,7 +168,7 @@ else:
                             ORDER BY game_date_utc DESC, season DESC, game_number DESC
                         ) AS rn
                     FROM marts.team_game_opponent_context
-                    WHERE team_id IN ({placeholders})
+                    WHERE team_id IN ({placeholders}) AND season = ?
                 ),
                 windowed AS (SELECT * FROM ranked WHERE rn <= {n_games})
                 SELECT
@@ -191,7 +201,7 @@ else:
                 FROM windowed
                 GROUP BY team_id
                 ORDER BY scores_allowed_per_game ASC NULLS LAST
-            """, team_ids)
+            """, team_ids + [form_season])
 
         defense_compare_metrics = [
             "games", "scores_allowed_per_game", "goals_allowed_per_game",

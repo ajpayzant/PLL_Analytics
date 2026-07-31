@@ -1,48 +1,73 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Team Profiles — one team, offence and defence, across every context.
+
+The sidebar filters are not requested: the team picker, the context radio and the
+game-log controls in the main panel are what drive the queries here.
+
+Four things were wrong or missing.
+
+1. Recent Form read `marts.team_last5_stats`, the league-wide "last five games
+   played anywhere" mart, with no season filter. Every row in it is 2026, so
+   Atlas's 2022 profile reported 10.6 scores/game from games played in May–July
+   2026 under the heading "Last 5"; their actual last five of 2022 was 12.4. The
+   game list under it had the same problem — `ORDER BY game_date_utc DESC LIMIT
+   5` over the whole game log — so a 2022 profile listed five 2026 opponents.
+   Page 07 hit this and was fixed; `team_season_last5_stats` is the scoped mart.
+
+2. Nothing on the page was pace-adjusted. A team's 13.6 scores/game says nothing
+   about efficiency until it is divided by the possessions it took to get there,
+   and the page had no rank for anything either: every number sat on its own with
+   no indication of whether it was first in the league or last. `add_league_context`
+   and `metric_grid`'s `context=` hook both existed for this and had no callers.
+
+3. The four-factor summary — offensive efficiency, defensive efficiency, ball
+   security, pace — was written in `shared/analysis.py` and called from nowhere.
+   It is the one view that answers "is this team good, and at what" in a glance.
+
+4. The defensive section showed eight hardcoded `stat_grid` tuples with labels and
+   digit counts set here, disagreeing with the registry. `opponent_goal_pct` was
+   labelled "Opp Goal %" with 2 decimals where the registry knows it as a
+   percentage; the 2PT-allowed, assists-allowed and ride/clear columns the marts
+   ship were not displayed at all.
+
+`stat_grid`'s (label, key, digits, pct) tuples are replaced throughout by
+`ui.metric_grid`, which reads all four from the registry.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from shared.db import query_df, table_exists, filter_values, _pll_get_table_columns
+import streamlit as st
+
+from shared import analysis
+from shared import metrics as M
+from shared import page as P
+from shared import ui
+from shared.db import query_df, table_exists, _pll_get_table_columns
 from shared.ui import (
-    apply_css, stat_card, stat_grid, safe_bar_chart, safe_line_chart, display_table,
+    stat_card, safe_bar_chart, safe_line_chart, display_table,
     fmt_value, pretty_col, profile_header, add_window_summary_rows, download_csv,
-    _pll_select_existing
 )
-from shared.filters import render_sidebar_filters
 
-st.set_page_config(page_title="Team Profiles · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
+ctx = P.init_page(
+    "Team Profiles",
+    "Team-level career, season, recent-form, game-log and opponent splits.",
+)
 
-import os
-from shared.db import DB_PATH
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-st.subheader("Team Profiles")
-st.markdown('<div class="section-note">Analyze team-level career, season, recent-form, game-log, and opponent splits.</div>', unsafe_allow_html=True)
-
-team_options = teams_df["team_name"].dropna().tolist()
+team_options = ctx.team_names
 
 selected_team = st.selectbox(
     "Select team",
     options=team_options,
-    index=0 if team_options else None,
+    # Honours a team picked on another page.
+    index=P.default_index(team_options, P.selected_team()),
     key="team_explorer_select"
 )
 
 if selected_team:
-    team_id = teams_df[teams_df["team_name"] == selected_team]["team_id"].iloc[0]
+    P.select_team(selected_team)
+    team_id = ctx.team_id_for(selected_team)
 
     career = query_df("""
         WITH record AS (
@@ -88,15 +113,138 @@ if selected_team:
 
     profile_header(selected_team, subtitle)
 
-    st.markdown("### Team Totals")
-    stat_grid(
+    # ------------------------------------------------------------------
+    # LEAGUE CONTEXT
+    #
+    # The whole league in the same context as the profile, so every figure below
+    # can carry a rank. Without it a page of numbers gives the reader no way to
+    # tell 13.6 scores/game apart from a league-leading 13.6 scores/game.
+    # ------------------------------------------------------------------
+
+    if selected_context == "Career":
+        league = query_df("SELECT * FROM marts.team_career_stats")
+        league_defense = (query_df("SELECT * FROM marts.team_defense_career_stats")
+                          if table_exists("marts", "team_defense_career_stats")
+                          else pd.DataFrame())
+        context_label = "career"
+    else:
+        league = query_df("SELECT * FROM marts.team_season_stats WHERE season = ?",
+                          [int(selected_context)])
+        league_defense = (
+            query_df("SELECT * FROM marts.team_defense_season_stats WHERE season = ?",
+                     [int(selected_context)])
+            if table_exists("marts", "team_defense_season_stats") else pd.DataFrame()
+        )
+        context_label = f"{selected_context}"
+
+    if len(league_defense) and "team_id" in league_defense.columns:
+        # Only the columns the offensive mart lacks, and none of the defensive
+        # mart's `team_*` mirrors of own-team stats: those restate columns already
+        # present under their plain names.
+        keep = ["team_id"] + [c for c in league_defense.columns
+                              if c not in league.columns
+                              and not c.startswith("team_") and c != "team_id"]
+        league = league.merge(league_defense[keep], on="team_id", how="left")
+
+    league = analysis.add_per_100_possessions(league)
+    if {"scores_per_100_poss", "scores_allowed_per_100_poss"}.issubset(league.columns):
+        league["net_efficiency_per_100_poss"] = (
+            pd.to_numeric(league["scores_per_100_poss"], errors="coerce")
+            - pd.to_numeric(league["scores_allowed_per_100_poss"], errors="coerce")
+        )
+
+    # The profile's own row inside the league frame — this is what carries the
+    # per-100 and allowed columns that `summary` (from the offensive mart alone)
+    # does not have.
+    team_rows = league[league["team_id"].astype(str) == str(team_id)]
+    team_row = team_rows.iloc[0] if len(team_rows) else None
+
+    coverage = analysis.possession_coverage(league)
+    if coverage < 0.98:
+        st.warning(
+            f"Possession data covers {coverage:.0%} of teams in this context, so "
+            "the per-100-possession figures below are based on partial data."
+        )
+
+    # ------------------------------------------------------------------
+    # EFFICIENCY
+    # ------------------------------------------------------------------
+
+    if team_row is not None:
+        eff_keys = M.with_values(team_row, [
+            "scores_per_100_poss", "scores_allowed_per_100_poss",
+            "net_efficiency_per_100_poss", "offensive_sequence_proxy_per_game",
+            "turnovers_per_100_poss", "shot_pct_calc",
+        ])
+        if eff_keys:
+            ui.section(
+                "Efficiency",
+                "Pace-adjusted production on both sides of the ball, with this "
+                f"team's rank among the {len(league)} teams in the {context_label} "
+                "table. Per-game figures flatter a fast team; per-100 does not.",
+            )
+            # context= turns each card's sub-line into "2nd of 8" — the hook on
+            # metric_grid that nothing in the app was using.
+            ui.metric_grid(team_row, eff_keys, columns=3,
+                           context=league, row_index=team_row.name)
+            ui.definition_caption(eff_keys)
+
+        # --------------------------------------------------------------
+        # FOUR FACTORS
+        # --------------------------------------------------------------
+        factors = analysis.four_factor_frame(league)
+        if len(factors) and "team_name" in factors.columns:
+            mine = factors[factors["team_name"] == selected_team]
+            if len(mine):
+                ui.section(
+                    "Four factors",
+                    "The four things that decide a lacrosse game, each with this "
+                    "team's league rank. Written for this app and displayed "
+                    "nowhere until now.",
+                )
+                cards = st.columns(len(mine))
+                for col, (_, fr) in zip(cards, mine.iterrows()):
+                    with col:
+                        ui.stat_card(
+                            fr["factor"],
+                            M.format_value(fr["metric"], fr["value"]),
+                            sub=f"{analysis.ordinal(int(fr['rank']))} of {len(league)}",
+                            # A rank in the top third is good news, the bottom
+                            # third bad, whichever direction the metric runs.
+                            tone=("good" if fr["rank"] <= len(league) / 3 else
+                                  "bad" if fr["rank"] > 2 * len(league) / 3 else None),
+                        )
+                with st.expander("What are the four factors?", expanded=False):
+                    for _, fr in mine.iterrows():
+                        st.markdown(f"**{fr['factor']}** — {fr['definition']}  \n"
+                                    f"<span class='section-note'>"
+                                    f"{M.direction_note(fr['metric'])}</span>",
+                                    unsafe_allow_html=True)
+
+    ui.section("Team Totals")
+    ui.metric_grid(
         summary,
-        [
-            ("Games", "games", 0), ("Wins", "wins", 0), ("Losses", "losses", 0),
-            ("Scores", "scores", 0), ("Goals", "goals", 0), ("Assists", "assists", 0),
-            ("Shots", "shots", 0), ("Turnovers", "turnovers", 0),
-        ],
-        columns=4
+        ["games", "wins", "losses", "win_pct", "scores", "goals", "assists",
+         "shots", "turnovers", "caused_turnovers", "touches", "total_passes"],
+        columns=4,
+    )
+
+    ui.section(
+        "Per-Game Rates",
+        "Per-game figures, which are comparable across seasons of different "
+        "lengths — 2026 is a shorter season than the ones before it. Each card "
+        "carries its league rank in this context.",
+    )
+    ui.metric_grid(
+        summary,
+        ["scores_per_game", "score_margin_per_game", "shots_per_game",
+         "shot_pct_calc", "assists_per_game", "turnovers_per_game",
+         "faceoff_pct_calc", "clear_pct_calc", "touches_per_game",
+         "time_in_possession_per_game", "offensive_sequence_proxy_per_game",
+         "saves_per_game"],
+        columns=4,
+        context=league,
+        row_index=team_row.name if team_row is not None else None,
     )
 
     # ---- Team Player Totals section ----
@@ -107,12 +255,7 @@ if selected_team:
     _tp_selected_team = selected_team
     _tp_selected_context = selected_context if selected_context is not None else "Career"
 
-    _pst_table_check = query_df("""
-        SELECT COUNT(*) AS n FROM information_schema.tables
-        WHERE table_schema = 'marts' AND table_name = 'player_season_stats_by_team'
-    """)
-
-    if int(_pst_table_check["n"].iloc[0]) == 0:
+    if not table_exists("marts", "player_season_stats_by_team"):
         st.info("Player season totals by team are not available yet.")
     else:
         try:
@@ -398,21 +541,19 @@ if selected_team:
                                 label="Download team player totals CSV"
                             )
 
-    # ---- Per-Game / Rate Stats ----
-    st.markdown("### Per-Game / Rate Stats")
-    stat_grid(
-        summary,
-        [
-            ("Win %", "win_pct", 2, True), ("Scores/G", "scores_per_game", 2),
-            ("Shots/G", "shots_per_game", 2), ("TO/G", "turnovers_per_game", 2),
-            ("Shot %", "shot_pct_calc", 2, True), ("FO %", "faceoff_pct_calc", 2, True),
-            ("Clear %", "clear_pct_calc", 2, True), ("Off. Seq./G", "offensive_sequence_proxy_per_game", 2),
-        ],
-        columns=4
-    )
-
     # ---- Defensive Profile ----
-    st.markdown("### Defensive / Opponent Profile")
+    #
+    # The old page had a second "Per-Game / Rate Stats" stat_grid here that
+    # restated Scores/G, Shots/G, TO/G, Shot %, FO %, Clear % and Off. Seq./G —
+    # every one already shown in the Per-Game Rates grid above, with labels and
+    # digit counts hardcoded a second time. Only Win % was unique to it, and it
+    # is in Team Totals.
+    ui.section(
+        "Defence and opponent profile",
+        "What this team allowed. Rates are per game, with league rank; the "
+        "efficiency figures in the Efficiency section above are the pace-adjusted "
+        "view of the same thing.",
+    )
 
     if table_exists("marts", "team_defense_season_stats"):
         if selected_context == "Career":
@@ -426,21 +567,32 @@ if selected_team:
 
         if len(defense_summary_df) > 0:
             defense_summary = defense_summary_df.iloc[0]
-            st.markdown("#### Defensive Summary")
-            stat_grid(
+            # Registry labels and units, and the allowed columns the marts ship
+            # that the old eight hardcoded tuples left off: 2PT allowed, assists
+            # allowed, opponent shooting accuracy and ride/clear pressure.
+            ui.metric_grid(
                 defense_summary,
-                [
-                    ("Scores Allowed/G", "scores_allowed_per_game", 2),
-                    ("Goals Allowed/G", "goals_allowed_per_game", 2),
-                    ("Opp Shots/G", "opponent_shots_per_game", 2),
-                    ("Opp Goal %", "opponent_goal_pct", 2, True),
-                    ("Save % Proxy", "save_pct_proxy", 2, True),
-                    ("CT/G", "caused_turnovers_for_per_game", 2),
-                    ("Opp TO/G", "opponent_turnovers_per_game", 2),
-                    ("Margin/G", "score_margin_per_game", 2),
-                ],
-                columns=4
+                M.with_values(defense_summary, [
+                    "scores_allowed_per_game", "goals_allowed_per_game",
+                    "two_point_goals_allowed_per_game", "assists_allowed_per_game",
+                    "opponent_shots_per_game", "opponent_goal_pct",
+                    "opponent_sog_rate", "opponent_sog_goal_pct",
+                    "save_pct_proxy", "caused_turnovers_for_per_game",
+                    "opponent_turnovers_per_game", "ct_per_opponent_turnover",
+                ]),
+                columns=4,
+                context=(league_defense if len(league_defense) else None),
+                row_index=(
+                    league_defense.index[
+                        league_defense["team_id"].astype(str) == str(team_id)][0]
+                    if len(league_defense) and "team_id" in league_defense.columns
+                    and (league_defense["team_id"].astype(str) == str(team_id)).any()
+                    else None
+                ),
             )
+            ui.definition_caption(["opponent_goal_pct", "opponent_sog_goal_pct",
+                                   "save_pct_proxy", "ct_per_opponent_turnover"])
+
             defense_cols = [
                 "team_name", "games", "wins", "losses", "win_pct", "team_scores_per_game",
                 "scores_allowed_per_game", "goals_allowed_per_game", "opponent_shots_per_game",
@@ -471,7 +623,11 @@ if selected_team:
     safe_line_chart(season_trend_df, x_col="season", y_cols=trend_selection, title=f"{selected_team} — Season Trend")
 
     # ---- Recent Form ----
-    st.markdown("### Recent Form")
+    ui.section(
+        "Recent form",
+        "The team's last games in the context being viewed — not its last games "
+        "overall.",
+    )
 
     split_choice = st.radio(
         "Recent form window",
@@ -481,42 +637,59 @@ if selected_team:
     )
 
     window_n = 5 if split_choice == "Last 5" else 10
-    split_table_name = "marts.team_last5_stats" if split_choice == "Last 5" else "marts.team_last10_stats"
 
-    split_df = query_df(f"SELECT * FROM {split_table_name} WHERE team_id = ?", [team_id])
+    # Season-scoped marts, not the league-wide last5/last10 ones. Those hold only
+    # the most recent games played anywhere — every row in them is 2026 — so a
+    # 2022 profile reported 10.6 scores/game from games played in mid-2026 under
+    # the heading "Last 5". Atlas's real last five of 2022 is 12.4.
+    if selected_context == "Career":
+        split_table_name = ("marts.team_last5_stats" if split_choice == "Last 5"
+                            else "marts.team_last10_stats")
+        split_df = query_df(f"SELECT * FROM {split_table_name} WHERE team_id = ?",
+                            [team_id])
+        form_window_note = "most recent games in any season"
+    else:
+        split_table_name = ("marts.team_season_last5_stats" if split_choice == "Last 5"
+                            else "marts.team_season_last10_stats")
+        split_df = query_df(
+            f"SELECT * FROM {split_table_name} WHERE team_id = ? AND season = ?",
+            [team_id, int(selected_context)])
+        form_window_note = f"last games of {selected_context}"
 
     if len(split_df) > 0:
         split_summary = split_df.iloc[0]
         profile_header(
             f"{selected_team} — {split_choice}",
-            f"Games: {fmt_value(split_summary.get('games', np.nan), 0)} | Opponents: {split_summary.get('opponents', '—')}"
+            f"{form_window_note} | Games: "
+            f"{fmt_value(split_summary.get('games', np.nan), 0)} | Opponents: "
+            f"{split_summary.get('opponents', '—')}"
         )
 
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("#### Window Totals")
-            stat_grid(
+            ui.metric_grid(
                 split_summary,
-                [
-                    ("Scores", "scores", 0), ("Goals", "goals", 0), ("Assists", "assists", 0),
-                    ("Shots", "shots", 0), ("Saves", "saves", 0), ("Turnovers", "turnovers", 0),
-                    ("Touches", "touches", 0), ("Off. Seq.", "offensive_sequence_proxy", 0),
-                ],
-                columns=4
+                ["scores", "goals", "assists", "shots", "saves", "turnovers",
+                 "touches", "offensive_sequence_proxy"],
+                columns=4,
             )
         with c2:
             st.markdown("#### Window Averages")
-            stat_grid(
+            ui.metric_grid(
                 split_summary,
-                [
-                    ("Scores/G", "scores_per_game", 2), ("Shots/G", "shots_per_game", 2),
-                    ("Saves/G", "saves_per_game", 2), ("TO/G", "turnovers_per_game", 2),
-                    ("Touches/G", "touches_per_game", 2), ("Passes/G", "total_passes_per_game", 2),
-                    ("Poss. Time/G", "time_in_possession_per_game", 2), ("Off. Seq./G", "offensive_sequence_proxy_per_game", 2),
-                ],
-                columns=4
+                ["scores_per_game", "shots_per_game", "saves_per_game",
+                 "turnovers_per_game", "touches_per_game", "total_passes_per_game",
+                 "time_in_possession_per_game", "offensive_sequence_proxy_per_game"],
+                columns=4,
             )
 
+        # Scoped the same way as the aggregate above: an unscoped LIMIT 5 over the
+        # whole game log listed five 2026 opponents on a 2022 profile.
+        season_clause = "" if selected_context == "Career" else "AND season = ?"
+        recent_params = [team_id]
+        if selected_context != "Career":
+            recent_params.append(int(selected_context))
         recent_games = query_df(f"""
             SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
                    scores, scores_against, goals, one_point_goals, two_point_goals, assists,
@@ -524,15 +697,50 @@ if selected_team:
                    faceoffs_won, faceoffs_lost, clears, clear_attempts, touches, total_passes,
                    time_in_possession, official_total_possessions, offensive_sequence_proxy
             FROM clean.team_game_stats
-            WHERE team_id = ?
+            WHERE team_id = ? {season_clause}
             ORDER BY game_date_utc DESC, season DESC, game_number DESC
             LIMIT {window_n}
-        """, [team_id])
+        """, recent_params)
 
         st.markdown(f"#### {split_choice} Individual Games")
         st.caption("The bottom two rows summarize the selected window across the individual games shown above.")
         recent_with_summary = add_window_summary_rows(recent_games)
         display_table(recent_with_summary, height=360)
+
+        # A trailing mean over the window, which the aggregate cannot show: a team
+        # averaging 12 while falling from 16 to 8 reads the same as one holding
+        # steady at 12.
+        if len(recent_games) > 2:
+            form_metric = ui.metric_selectbox(
+                "Form trend metric",
+                options=M.with_data(recent_games, [
+                    "scores", "scores_against", "shots", "shots_on_goal", "saves",
+                    "turnovers", "caused_turnovers", "touches",
+                    "offensive_sequence_proxy",
+                ]),
+                key=f"team_form_trend_{team_id}",
+                default="scores",
+            )
+            if form_metric:
+                trend = recent_games.sort_values(["season", "game_number"]).copy()
+                trend["game_label"] = (trend["season"].astype(str) + " G"
+                                       + trend["game_number"].astype("Int64").astype(str))
+                rolled = analysis.add_rolling(trend, form_metric, window=3)
+                y_cols = [form_metric]
+                roll_col = f"{form_metric}_roll3"
+                if roll_col in rolled.columns:
+                    y_cols.append(roll_col)
+                safe_line_chart(
+                    rolled, x_col="game_label", y_cols=y_cols,
+                    title=f"{selected_team} — {M.label(form_metric)} over the window",
+                )
+                delta = analysis.form_delta(trend, form_metric, window=3)
+                if pd.notna(delta):
+                    st.caption(
+                        f"Last three games average {M.format_value(form_metric, abs(delta))} "
+                        f"{'above' if delta > 0 else 'below'} the earlier games in this "
+                        f"window."
+                    )
 
     # ---- Team Game Log ----
     st.markdown("### Team Game Log")

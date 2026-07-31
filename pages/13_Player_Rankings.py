@@ -1,33 +1,36 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Player Rankings — the cross-role composite score, and how it was built.
+
+The sidebar filters are not requested: the context, role, minimum-games and search
+controls are all in the main panel, driven by the mart's own eligibility columns.
+
+`_pll_extra_table_exists` re-implemented `db.table_exists` and `_pll_context_order`
+was a byte-for-byte copy of page 14's; both are now shared. The ranking method and
+tier tables come from `shared/scoring.py`, which the Data Guide re-derives against
+this same mart.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import streamlit as st
 
-from shared.db import query_df, DB_PATH
+from shared import page as P
+from shared import scoring
+from shared import ui
+from shared.db import query_df, table_exists
 from shared.ui import (
-    apply_css, stat_card, display_table, download_csv,
+    stat_card, display_table, download_csv,
     fmt_value, pretty_col, _pll_select_existing
 )
-from shared.filters import render_sidebar_filters
 
-st.set_page_config(page_title="Player Rankings · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
-
-import os
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
+ctx = P.init_page(
+    "Player Rankings",
+    "A single cross-role score, with the role, peer-pool and component detail "
+    "behind it.",
+)
 
 
 # ============================================================
@@ -35,44 +38,10 @@ except Exception as e:
 # ============================================================
 
 @st.cache_data(ttl=600, show_spinner=False)
-def _pll_extra_table_exists(schema_name, table_name):
-    df = query_df("""
-        SELECT COUNT(*) AS n
-        FROM information_schema.tables
-        WHERE table_schema = ?
-          AND table_name = ?
-    """, [schema_name, table_name])
-    return bool(len(df) > 0 and int(df["n"].iloc[0]) > 0)
-
-
-@st.cache_data(ttl=600, show_spinner=False)
 def _pll_load_player_rankings():
-    if not _pll_extra_table_exists("marts", "player_ranking_profiles"):
+    if not table_exists("marts", "player_ranking_profiles"):
         return pd.DataFrame()
     return query_df("SELECT * FROM marts.player_ranking_profiles")
-
-
-def _pll_context_order(df, context_col, type_col, sort_col):
-    if df is None or len(df) == 0:
-        return []
-    work = df.copy()
-    if context_col not in work.columns:
-        return []
-    if type_col not in work.columns:
-        work[type_col] = "Other"
-    if sort_col not in work.columns:
-        labels = work[context_col].astype(str)
-        extracted_year = labels.str.extract(r"(20\d{2})", expand=False)
-        derived = pd.to_numeric(extracted_year, errors="coerce")
-        derived = np.where(labels.str.contains("Career", case=False, na=False), 0, derived)
-        derived = np.where(labels.str.contains("Last 10", case=False, na=False), -10, derived)
-        derived = np.where(labels.str.contains("Last 5", case=False, na=False), -5, derived)
-        work[sort_col] = derived
-    out = work[[context_col, type_col, sort_col]].drop_duplicates().copy()
-    out["_type_order"] = np.where(out[type_col].astype(str).eq("Career"), 0, 1)
-    out["_sort"] = pd.to_numeric(out[sort_col], errors="coerce")
-    out = out.sort_values(["_type_order", "_sort", context_col], ascending=[True, False, True], na_position="last")
-    return out[context_col].tolist()
 
 
 def _pll_pct_rank(series, higher_is_better=True):
@@ -281,35 +250,6 @@ def _pll_prepare_player_rankings(rankings):
     return df
 
 
-def _pll_metric_bar(df, metric, label_col, color_col=None, title=None, n=20):
-    if df is None or len(df) == 0:
-        st.info("No chart data available.")
-        return
-    if metric not in df.columns or label_col not in df.columns:
-        st.info("Required chart columns are not available.")
-        return
-    chart_df = df.copy()
-    chart_df[metric] = pd.to_numeric(chart_df[metric], errors="coerce")
-    chart_df = chart_df.dropna(subset=[metric]).head(n)
-    if len(chart_df) == 0:
-        st.info("No chart data available.")
-        return
-    chart_df = chart_df.sort_values(metric, ascending=True)
-    fig = px.bar(
-        chart_df,
-        x=metric,
-        y=label_col,
-        color=color_col if color_col in chart_df.columns else None,
-        orientation="h",
-        text=metric,
-        title=title or pretty_col(metric),
-        labels={c: pretty_col(c) for c in chart_df.columns}
-    )
-    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
-    fig.update_layout(yaxis_title="", xaxis_tickformat=".2f", margin=dict(l=10, r=20, t=45, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-
 def _pll_tier_distribution_chart(df):
     if df is None or len(df) == 0 or "role_value_tier" not in df.columns:
         st.info("No tier distribution data available.")
@@ -335,18 +275,12 @@ def _pll_tier_distribution_chart(df):
         labels={"role_group": "Role", "players": "Players", "role_value_tier": "Role Tier"}
     )
     fig.update_layout(margin=dict(l=10, r=20, t=45, b=10), yaxis_tickformat=".0f")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 # ============================================================
 # PAGE CONTENT
 # ============================================================
-
-st.subheader("Player Rankings")
-st.markdown(
-    '<div class="section-note">Rank players using the official overall score, which combines production, role value, usage, scoring value, and peer separation.</div>',
-    unsafe_allow_html=True
-)
 
 rankings = _pll_load_player_rankings()
 
@@ -358,19 +292,13 @@ if len(rankings) == 0:
 else:
     rankings = _pll_prepare_player_rankings(rankings)
 
-    context_options = _pll_context_order(
-        rankings,
-        "ranking_context",
-        "ranking_context_type",
-        "ranking_context_sort"
-    )
-
-    season_contexts = [c for c in context_options if "Season" in str(c)]
-    default_context = season_contexts[0] if season_contexts else (context_options[0] if context_options else None)
+    context_options = scoring.context_order(rankings, "ranking_context")
 
     if not context_options:
         st.info("No ranking contexts found in the data.")
         st.stop()
+
+    default_ranking_context = scoring.default_context(context_options)
 
     controls = st.columns([1.35, 1.0, 0.75, 1.45])
 
@@ -378,7 +306,7 @@ else:
         selected_ranking_context = st.selectbox(
             "Ranking context",
             options=context_options,
-            index=context_options.index(default_context) if default_context else 0,
+            index=P.default_index(context_options, default_ranking_context),
             key="player_rankings_context"
         )
 
@@ -570,36 +498,19 @@ else:
         max_gp = pd.to_numeric(context_rankings.get("games", pd.Series(dtype=float)), errors="coerce").max()
         stat_card("Max GP", fmt_value(max_gp, 0))
 
+    # Both blocks are generated from shared/scoring.py rather than written here.
+    # This page and the Data Guide each used to carry their own copy of the formula
+    # and they disagreed about the weights; now there is one description, and the
+    # Guide verifies it against the mart that computes the score.
     with st.expander("Ranking Method", expanded=False):
-        st.markdown(
-            """
-            ### 3-Component Ranking Architecture
-
-            Each player's **Overall Score** is built from three clean components:
-
-            **1. Role Performance Score (RPS)** — how well you do your specific job
-            - *Offense:* Points production, creation efficiency, assist conversion rate, shot quality, 2PT conversion
-            - *Defense:* Caused turnovers, ground balls, ball security
-            - *Faceoff:* Win %, total wins, volume
-            - *Goalie:* Clean save rate (skill-based stops), overall save %, volume, outcomes
-
-            **2. Peer Standing Score (PSS)** — where you rank among your role peers
-            - Your RPS rank within your role group, passed through a sigmoid curve so 50 = role average, 85+ = top 10%
-            - Uses IQR-based robust z-scoring so small samples don't distort peer separation
-
-            **3. Cross-Role Impact Score (CIS)** — contributions that transcend your position
-            - Ground balls, possession/usage, ball security — scored globally across all roles
-
-            **Overall Score weights by role:**
-            - *Offense:* 60% RPS + 25% PSS + 15% CIS
-            - *Defense:* 65% RPS + 25% PSS + 10% CIS
-            - *Faceoff:* 65% RPS + 25% PSS + 10% CIS
-            - *Goalie:* 70% RPS (transfer-adjusted) + 25% PSS + 5% CIS
-
-            **Goalie Transfer Adjustment** compresses goalie-only value toward the league baseline for the all-player Overall view. The dedicated Goalie view uses full goalie-specific value — this prevents a small goalie peer pool from dominating cross-position rankings in early season.
-
-            **Score Scale Calibration** shifts each context toward an average-player baseline near 50 without changing rank order.
-            """
+        st.markdown(scoring.method_markdown(
+            scoring.peer_sizes_from_mart(context_rankings),
+            selected_ranking_context,
+        ))
+        st.caption(
+            "The Data Guide re-derives the score from these weights and the mart's "
+            "own component columns, so this description is checked rather than "
+            "asserted."
         )
 
     st.caption(
@@ -609,18 +520,12 @@ else:
     )
 
     with st.expander("Score Tier Guide", expanded=False):
-        st.markdown(
-            """
-            | Score Range | Tier | Description |
-            |---|---|---|
-            | **85+** | Elite / Outlier Elite | Top 10% of role — clear difference-maker |
-            | **70–84** | High-End | Top 25% — reliable contributor above the line |
-            | **55–69** | Solid Starter | Above average — performing their role well |
-            | **45–54** | Average | Close to league-average for the role |
-            | **Below 45** | Developmental / Limited sample | Below average or insufficient games |
-
-            Scores are calibrated so **50 = league average** in the selected context. Small-sample players (fewer games than the context minimum) may have less stable scores.
-            """
+        st.dataframe(scoring.tiers_frame(), width="stretch", hide_index=True,
+                     height=220)
+        st.caption(
+            f"Scores are calibrated so 50 is league average within "
+            f"{selected_ranking_context}. Players below the context's games minimum "
+            "have less stable scores."
         )
 
     compact_cols_by_view = {
@@ -754,13 +659,15 @@ else:
 
     with visual_cols[0]:
         st.markdown("### Top Scores")
-        _pll_metric_bar(
-            filtered_rankings,
-            metric=score_col,
-            label_col="full_name",
+        # safe_bar_chart takes the axis format from the metric registry, so a score
+        # renders as a score; the old local helper hardcoded two decimals.
+        ui.safe_bar_chart(
+            filtered_rankings.head(min(25, int(ranking_rows))),
+            x_col="full_name",
+            y_col=score_col,
             color_col="role_group" if "role_group" in filtered_rankings.columns else "position",
             title=f"{ranking_view} Rankings — {selected_ranking_context}",
-            n=min(25, int(ranking_rows))
+            orientation="h",
         )
 
     with visual_cols[1]:
@@ -809,7 +716,7 @@ else:
                 yaxis_tickformat=".2f",
                 margin=dict(l=10, r=20, t=45, b=10)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
     st.markdown("### Player Detail")
 
@@ -880,7 +787,7 @@ else:
                     yaxis_title="",
                     margin=dict(l=10, r=20, t=45, b=10)
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             detail_display_cols = list(dict.fromkeys([
                 c for c in [

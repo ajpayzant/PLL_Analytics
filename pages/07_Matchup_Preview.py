@@ -1,873 +1,805 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Matchup Preview — two teams, side by side, before or after the game.
+
+The sidebar filters are not requested: the season, game-group and game pickers in
+the main panel are what drive every query here.
+
+Five things were wrong or missing, beyond the shared-helper cleanup.
+
+1. The game list sorted by `game_number` and opened on index 0, so the default
+   "upcoming" game was the *lowest-numbered* game still flagged `scheduled` —
+   which, once a game has kicked off but its stats have not landed, is a game
+   that was already played. The page called that the next matchup. Games are now
+   classified by kickoff time the way `app.py` and the Schedule page do, and the
+   picker opens on the next game by clock.
+
+2. Current Form read `marts.team_last5_stats` and `marts.player_last5_stats`,
+   which are league-wide "last five games played" tables — every row in them is
+   from 2026. Previewing Atlas–Chaos in 2022 showed Atlas at 10.6 scores/game
+   from games in May–July 2026 under the heading "Last 5"; their actual last five
+   of 2022 was 12.4. The season-scoped marts (`team_season_last5_stats`,
+   `player_season_last5_stats`) exist and are what this page now reads.
+
+3. Key Players matched a team by substring-searching the pipe-delimited `teams`
+   column ("ATL|WHP"), which listed a mid-season arrival under both of his teams
+   with his combined totals — Matt Rambo's 2026 season showed as 5 games and 5
+   points for Atlas *and* for Whipsnakes, where the split is 4 games/5 points and
+   1 game/0 points. `marts.player_season_stats_by_team` carries a real `team_id`
+   and one row per team, so the season view reads that.
+
+4. Everything on the page was raw or per-game. A matchup is about one team's
+   offence against the other's defence, so the page now leads with pace-adjusted
+   efficiency on both sides with league rank, and the defensive marts are a
+   first-class view rather than one section at the bottom.
+
+5. The completed-game box score gated its Defense/Faceoff/Goalie views on
+   hardcoded position strings, including `["D", "LSM", "SSDM", "G"]` in one place
+   and `["FO", "FOS"]` in another. `roles.py` settles that taxonomy.
+
+Local helpers removed: `mmss_from_seconds` and `format_pct_safe` (already in
+`shared/ui.py`), `pll_safe_number`, `pll_clock_from_seconds`,
+`pll_fmt_profile_value` and `pll_profile_matrix` (the metric registry formats and
+`ui.comparison_matrix` builds the side-by-side frame),
+`pll_add_team_profile_derived_cols` (the marts already ship every per-game and
+`_calc` column it recomputed), `build_team_boxscore_matrix` (same), and
+`render_matchup_scoreboard`, which injected its own light-theme CSS that fought
+the app's card styling — `ui.scoreboard` is the themed version.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-from html import escape
-from shared.db import query_df, schedule_display_table, table_exists, filter_values
-from shared.ui import (
-    apply_css, stat_card, safe_bar_chart, display_table, display_comparison_matrix,
-    fmt_value, pretty_col, profile_header, profile_summary_cards,
+import streamlit as st
+
+from shared import analysis
+from shared import metrics as M
+from shared import page as P
+from shared import roles
+from shared import ui
+from shared.db import query_df, schedule_display_table, table_exists
+
+ctx = P.init_page(
+    "Matchup Preview",
+    "Two teams side by side — efficiency, form, history and personnel.",
 )
-from shared.filters import render_sidebar_filters
-
-st.set_page_config(page_title="Matchup Preview · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
-
-import os
-from shared.db import DB_PATH
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
 
 # ============================================================
-# LOCAL HELPER FUNCTIONS (Matchup-only)
+# GAME PICKER
 # ============================================================
 
-def mmss_from_seconds(x):
-    if x is None or pd.isna(x):
-        return "—"
-    try:
-        seconds = int(round(float(x)))
-    except Exception:
-        return "—"
-    sign = "-" if seconds < 0 else ""
-    seconds = abs(seconds)
-    minutes = seconds // 60
-    secs = seconds % 60
-    return f"{sign}{minutes}:{secs:02d}"
+schedule = schedule_display_table().copy()
 
+controls = st.columns([1, 2])
 
-def format_pct_safe(x):
-    if x is None or pd.isna(x):
-        return "—"
-    try:
-        return f"{float(x):.2%}"
-    except Exception:
-        return str(x)
+season = controls[0].selectbox(
+    "Season",
+    options=ctx.seasons,
+    index=P.default_index(ctx.seasons, P.selected_season(), fallback=-1),
+    key="matchup_season",
+)
+if season is not None:
+    P.select_season(season)
 
+pool = schedule[schedule["season"] == season].copy()
 
-def render_matchup_scoreboard(matchup, away_name, home_name):
-    away_score_raw = matchup.get("away_score", np.nan)
-    home_score_raw = matchup.get("home_score", np.nan)
-    status = str(matchup.get("status_display", matchup.get("event_status_label", "—"))).title()
-    game_num = fmt_value(matchup.get("game_number", np.nan), 0)
-    game_date = matchup.get("game_date_display", "—")
-    away_score = fmt_value(away_score_raw, 0)
-    home_score = fmt_value(home_score_raw, 0)
-    away_score_numeric = pd.to_numeric(pd.Series([away_score_raw]), errors="coerce").iloc[0]
-    home_score_numeric = pd.to_numeric(pd.Series([home_score_raw]), errors="coerce").iloc[0]
-    away_class = ""
-    home_class = ""
-    if pd.notna(away_score_numeric) and pd.notna(home_score_numeric):
-        if away_score_numeric > home_score_numeric:
-            away_class = "winner"
-        elif home_score_numeric > away_score_numeric:
-            home_class = "winner"
-    st.markdown(
-        f"""
-        <style>
-            .matchup-scoreboard {{
-                display: grid;
-                grid-template-columns: 1fr auto 1fr;
-                gap: 14px;
-                align-items: stretch;
-                margin: 8px 0 18px 0;
-            }}
-            .matchup-team-card {{
-                border: 1px solid rgba(148, 163, 184, 0.35);
-                border-radius: 18px;
-                padding: 18px 20px;
-                background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96));
-                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-            }}
-            .matchup-team-card.winner {{
-                border-color: rgba(22, 163, 74, 0.55);
-                box-shadow: 0 10px 28px rgba(22, 163, 74, 0.14);
-            }}
-            .matchup-team-label {{
-                font-size: 0.75rem;
-                font-weight: 800;
-                text-transform: uppercase;
-                letter-spacing: 0.07em;
-                color: #64748b;
-                margin-bottom: 6px;
-            }}
-            .matchup-team-row {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 12px;
-            }}
-            .matchup-team-name {{
-                font-size: 1.35rem;
-                font-weight: 850;
-                color: #0f172a;
-                line-height: 1.1;
-            }}
-            .matchup-score {{
-                font-size: 2.1rem;
-                font-weight: 950;
-                color: #0f172a;
-                min-width: 64px;
-                text-align: right;
-            }}
-            .matchup-vs-card {{
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                min-width: 76px;
-                border-radius: 18px;
-                background: #0f172a;
-                color: white;
-                font-weight: 900;
-                letter-spacing: 0.08em;
-                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
-            }}
-            .matchup-meta {{
-                font-size: 0.82rem;
-                color: #475569;
-                margin-top: 8px;
-                font-weight: 600;
-            }}
-        </style>
-        <div class="matchup-scoreboard">
-            <div class="matchup-team-card {away_class}">
-                <div class="matchup-team-label">Away</div>
-                <div class="matchup-team-row">
-                    <div class="matchup-team-name">{escape(str(away_name))}</div>
-                    <div class="matchup-score">{escape(str(away_score))}</div>
-                </div>
-                <div class="matchup-meta">Game {escape(str(game_num))} · {escape(str(game_date))}</div>
-            </div>
-            <div class="matchup-vs-card">AT</div>
-            <div class="matchup-team-card {home_class}">
-                <div class="matchup-team-label">Home</div>
-                <div class="matchup-team-row">
-                    <div class="matchup-team-name">{escape(str(home_name))}</div>
-                    <div class="matchup-score">{escape(str(home_score))}</div>
-                </div>
-                <div class="matchup-meta">Status: {escape(str(status))}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+# `scheduled` means two different things once kickoff has passed: a genuinely
+# upcoming game, and one that has been played but whose stats have not reached
+# the warehouse. Only the first is "next".
+kickoff = pd.to_datetime(pool.get("game_date_guess"), errors="coerce", utc=True)
+now = pd.Timestamp.now(tz="UTC")
+is_final = pool["status_display"].eq("final") if "status_display" in pool else False
+pool["kickoff"] = kickoff
+pool["kickoff_local"] = pd.to_datetime(pool.get("game_date_guess"), errors="coerce")
+pool["stage"] = np.where(
+    is_final, "Final",
+    np.where(kickoff >= now, "Upcoming", "Awaiting stats"),
+)
 
-
-def build_team_boxscore_matrix(team_box_df, away_id, away_name, home_id, home_name):
-    if team_box_df is None or len(team_box_df) == 0:
-        return pd.DataFrame()
-    away = team_box_df[team_box_df["team_id"] == away_id]
-    home = team_box_df[team_box_df["team_id"] == home_id]
-    if len(away) == 0 or len(home) == 0:
-        return pd.DataFrame()
-    away = away.iloc[0]
-    home = home.iloc[0]
-    stat_specs = [
-        ("Score", "scores", "number"),
-        ("Goals", "goals", "number"),
-        ("1PT Goals", "one_point_goals", "number"),
-        ("2PT Goals", "two_point_goals", "number"),
-        ("Assists", "assists", "number"),
-        ("Shots", "shots", "number"),
-        ("Shots on Goal", "shots_on_goal", "number"),
-        ("Shot %", "shot_pct", "pct"),
-        ("Ground Balls", "ground_balls", "number"),
-        ("Turnovers", "turnovers", "number"),
-        ("Caused Turnovers", "caused_turnovers", "number"),
-        ("Faceoffs Won", "faceoffs_won", "number"),
-        ("Faceoffs Lost", "faceoffs_lost", "number"),
-        ("Faceoff %", "faceoff_pct", "pct"),
-        ("Saves", "saves", "number"),
-        ("Save %", "save_pct", "pct"),
-        ("Penalties", "num_penalties", "number"),
-        ("PIM", "pim", "number"),
-        ("Touches", "touches", "number"),
-        ("Passes", "total_passes", "number"),
-        ("Possession Time", "time_in_possession", "time"),
-        ("Possession %", "time_in_possession_pct", "pct"),
-        ("Official Possessions", "official_total_possessions", "number"),
-        ("Offensive Sequences", "offensive_sequence_proxy", "number"),
-    ]
-    rows = []
-    for label, col, kind in stat_specs:
-        if col not in team_box_df.columns:
-            continue
-        away_val = away.get(col, np.nan)
-        home_val = home.get(col, np.nan)
-        if kind == "time":
-            away_fmt = mmss_from_seconds(away_val)
-            home_fmt = mmss_from_seconds(home_val)
-        elif kind == "pct":
-            away_fmt = format_pct_safe(away_val)
-            home_fmt = format_pct_safe(home_val)
-        else:
-            away_fmt = fmt_value(away_val, 2)
-            home_fmt = fmt_value(home_val, 2)
-        rows.append({away_name: away_fmt, "Stat": label, home_name: home_fmt})
-    return pd.DataFrame(rows)
-
-
-def render_completed_game_review(matchup, away_id, away_name, home_id, home_name):
-    status = str(matchup.get("status_display", "")).lower()
-    if status != "final":
-        return
-    selected_game_id = matchup.get("event_id", None)
-    if selected_game_id is None or pd.isna(selected_game_id):
-        st.info("No completed-game ID was found for this matchup.")
-        return
-    st.markdown("### Completed Game Review")
-    team_box = query_df("""
-        SELECT
-            team_id, team_name, opponent_team_id, opponent_team_name, result,
-            scores, scores_against, goals, one_point_goals, two_point_goals,
-            assists, shots, shot_pct, shots_on_goal, ground_balls, turnovers,
-            caused_turnovers, faceoffs, faceoffs_won, faceoffs_lost, faceoff_pct,
-            saves, save_pct, goals_against, num_penalties, pim, touches,
-            total_passes, time_in_possession, time_in_possession_pct,
-            official_total_possessions, offensive_sequence_proxy, possession_data_status
-        FROM clean.team_game_stats
-        WHERE game_id = ?
-        ORDER BY CASE WHEN team_id = ? THEN 0 WHEN team_id = ? THEN 1 ELSE 2 END
-    """, [selected_game_id, away_id, home_id])
-    box_matrix = build_team_boxscore_matrix(team_box, away_id, away_name, home_id, home_name)
-    if len(box_matrix) > 0:
-        st.markdown("#### Team Box Score")
-        display_table(box_matrix, height=520)
-    else:
-        st.info("No team box score rows found for this completed game.")
-    if len(team_box) > 0 and "possession_data_status" in team_box.columns:
-        statuses = sorted(team_box["possession_data_status"].dropna().astype(str).unique().tolist())
-        if statuses:
-            st.caption("Possession data status: " + ", ".join(statuses) + ". Possession time is shown as MM:SS.")
-    player_box = query_df("""
-        SELECT
-            team_id, team_name, position, position_name, full_name,
-            points, scoring_points, one_point_goals, two_point_goals, goals, assists,
-            shots, shot_pct, shots_on_goal, shots_on_goal_rate, ground_balls,
-            turnovers, caused_turnovers, num_penalties, pim, touches, total_passes,
-            fo_record, faceoff_pct, faceoffs, faceoffs_won, faceoffs_lost,
-            scores_against, goals_against, saves, save_pct, clean_saves, messy_saves
-        FROM clean.player_game_stats
-        WHERE game_id = ?
-        ORDER BY team_name, points DESC NULLS LAST, goals DESC NULLS LAST, assists DESC NULLS LAST, shots DESC NULLS LAST
-    """, [selected_game_id])
-    if len(player_box) == 0:
-        st.info("No player box score rows found for this completed game.")
-        return
-    st.markdown("#### Player Box Score")
-    team_options = [(away_name, away_id), (home_name, home_id)]
-    selected_team_label = st.radio(
-        "Player box score team",
-        options=[x[0] for x in team_options],
-        horizontal=True,
-        key=f"completed_box_team_{selected_game_id}"
-    )
-    selected_team_id = dict(team_options)[selected_team_label]
-    selected_players = player_box[player_box["team_id"] == selected_team_id].copy()
-    if len(selected_players) == 0:
-        st.info("No players found for selected team.")
-        return
-    offensive_cols = ["full_name", "position", "points", "scoring_points", "goals", "one_point_goals", "two_point_goals", "assists", "shots", "shot_pct", "shots_on_goal", "ground_balls", "turnovers", "touches", "total_passes"]
-    defensive_cols = ["full_name", "position", "caused_turnovers", "ground_balls", "points", "num_penalties", "pim", "shots", "touches", "total_passes"]
-    faceoff_cols = ["full_name", "position", "fo_record", "faceoff_pct", "faceoffs", "faceoffs_won", "faceoffs_lost", "points", "assists", "ground_balls", "shots", "touches"]
-    goalie_cols = ["full_name", "position", "scores_against", "goals_against", "save_pct", "saves", "clean_saves", "messy_saves", "touches", "total_passes"]
-    _box_view = st.radio(
-        "Player box score view",
-        options=["Offense", "Defense", "Faceoff", "Goalie"],
-        horizontal=True,
-        key=f"completed_box_view_{selected_game_id}",
-    )
-    if _box_view == "Offense":
-        off_df = selected_players[[c for c in offensive_cols if c in selected_players.columns]].sort_values(
-            [c for c in ["points", "goals", "assists", "shots"] if c in selected_players.columns], ascending=False
-        )
-        display_table(off_df, height=420)
-    elif _box_view == "Defense":
-        def_df = selected_players.copy()
-        if "caused_turnovers" in def_df.columns:
-            def_df = def_df[
-                (pd.to_numeric(def_df["caused_turnovers"], errors="coerce").fillna(0) > 0)
-                | (def_df["position"].astype(str).isin(["D", "LSM", "SSDM", "G"]))
-                | (pd.to_numeric(def_df.get("ground_balls", 0), errors="coerce").fillna(0) > 0)
-            ]
-        def_df = def_df[[c for c in defensive_cols if c in def_df.columns]].sort_values(
-            [c for c in ["caused_turnovers", "ground_balls", "touches"] if c in def_df.columns], ascending=False
-        )
-        display_table(def_df, height=420)
-    elif _box_view == "Faceoff":
-        fo_df = selected_players.copy()
-        if "faceoffs" in fo_df.columns:
-            fo_df = fo_df[
-                (fo_df["position"].astype(str).isin(["FO", "FOS"]))
-                | (pd.to_numeric(fo_df["faceoffs"], errors="coerce").fillna(0) > 0)
-            ]
-        fo_df = fo_df[[c for c in faceoff_cols if c in fo_df.columns]].sort_values(
-            [c for c in ["faceoffs", "faceoffs_won", "ground_balls"] if c in fo_df.columns], ascending=False
-        )
-        display_table(fo_df, height=360)
-    else:
-        goalie_df = selected_players.copy()
-        if "saves" in goalie_df.columns:
-            goalie_df = goalie_df[
-                (goalie_df["position"].astype(str) == "G")
-                | (pd.to_numeric(goalie_df["saves"], errors="coerce").fillna(0) > 0)
-                | (pd.to_numeric(goalie_df.get("scores_against", 0), errors="coerce").fillna(0) > 0)
-            ]
-        goalie_df = goalie_df[[c for c in goalie_cols if c in goalie_df.columns]].sort_values(
-            [c for c in ["saves", "save_pct"] if c in goalie_df.columns], ascending=False
-        )
-        display_table(goalie_df, height=320)
-
-
-def pll_safe_number(x):
-    if x is None or pd.isna(x):
-        return np.nan
-    try:
-        return float(x)
-    except Exception:
-        return np.nan
-
-
-def pll_clock_from_seconds(x, total=False):
-    val = pll_safe_number(x)
-    if pd.isna(val):
-        return "—"
-    seconds = int(round(val))
-    sign = "-" if seconds < 0 else ""
-    seconds = abs(seconds)
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    if total and hours > 0:
-        return f"{sign}{hours}:{minutes:02d}:{secs:02d}"
-    return f"{sign}{minutes}:{secs:02d}"
-
-
-def pll_fmt_profile_value(row, col, kind="number", decimals=2):
-    if row is None or col not in row.index:
-        return "—"
-    val = row.get(col, np.nan)
-    if val is None or pd.isna(val):
-        return "—"
-    if kind == "time_pg":
-        return pll_clock_from_seconds(val, total=False)
-    if kind == "time_total":
-        return pll_clock_from_seconds(val, total=True)
-    if kind == "pct":
-        try:
-            return f"{float(val):.{decimals}%}"
-        except Exception:
-            return "—"
-    if kind == "int":
-        try:
-            return f"{int(round(float(val))):,}"
-        except Exception:
-            return "—"
-    if kind == "record":
-        return str(val)
-    try:
-        num = float(val)
-        if abs(num - round(num)) < 0.0000001:
-            return f"{int(round(num)):,}"
-        return f"{num:,.{decimals}f}"
-    except Exception:
-        return str(val)
-
-
-def pll_add_team_profile_derived_cols(df):
-    if df is None or len(df) == 0:
-        return pd.DataFrame()
-    out = df.copy()
-    numeric_cols = [
-        "games", "wins", "losses", "scores", "goals", "one_point_goals", "two_point_goals",
-        "assists", "shots", "shots_on_goal", "ground_balls", "turnovers", "caused_turnovers",
-        "faceoffs", "faceoffs_won", "faceoffs_lost", "saves", "clean_saves", "messy_saves",
-        "num_penalties", "pim", "touches", "total_passes", "time_in_possession",
-        "official_total_possessions", "offensive_sequence_proxy"
-    ]
-    for c in numeric_cols:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-    if "games" in out.columns:
-        games = out["games"].replace(0, np.nan)
-        for total_col in [
-            "scores", "goals", "one_point_goals", "two_point_goals", "assists",
-            "shots", "shots_on_goal", "ground_balls", "turnovers", "caused_turnovers",
-            "faceoffs", "faceoffs_won", "faceoffs_lost", "saves", "clean_saves", "messy_saves",
-            "num_penalties", "pim", "touches", "total_passes", "time_in_possession",
-            "official_total_possessions", "offensive_sequence_proxy"
-        ]:
-            pg_col = f"{total_col}_per_game"
-            if total_col in out.columns and pg_col not in out.columns:
-                out[pg_col] = out[total_col] / games
-    if "wins" in out.columns and "losses" in out.columns:
-        out["record_display"] = (
-            out["wins"].fillna(0).round(0).astype(int).astype(str)
-            + "-"
-            + out["losses"].fillna(0).round(0).astype(int).astype(str)
-        )
-    if "win_pct" not in out.columns and {"wins", "games"}.issubset(out.columns):
-        out["win_pct"] = out["wins"] / out["games"].replace(0, np.nan)
-    if "shot_pct_calc" not in out.columns and {"goals", "shots"}.issubset(out.columns):
-        out["shot_pct_calc"] = out["goals"] / out["shots"].replace(0, np.nan)
-    if "shots_on_goal_rate_calc" not in out.columns and {"shots_on_goal", "shots"}.issubset(out.columns):
-        out["shots_on_goal_rate_calc"] = out["shots_on_goal"] / out["shots"].replace(0, np.nan)
-    if "faceoff_pct_calc" not in out.columns and {"faceoffs_won", "faceoffs"}.issubset(out.columns):
-        out["faceoff_pct_calc"] = out["faceoffs_won"] / out["faceoffs"].replace(0, np.nan)
-    if "save_pct_calc" not in out.columns and {"saves", "goals_against"}.issubset(out.columns):
-        out["save_pct_calc"] = out["saves"] / (out["saves"] + out["goals_against"]).replace(0, np.nan)
-    if "passes_per_touch" not in out.columns and {"total_passes", "touches"}.issubset(out.columns):
-        out["passes_per_touch"] = out["total_passes"] / out["touches"].replace(0, np.nan)
-    if "seconds_possession_per_touch" not in out.columns and {"time_in_possession", "touches"}.issubset(out.columns):
-        out["seconds_possession_per_touch"] = out["time_in_possession"] / out["touches"].replace(0, np.nan)
-    if "touches_per_offensive_sequence_proxy" not in out.columns and {"touches", "offensive_sequence_proxy"}.issubset(out.columns):
-        out["touches_per_offensive_sequence_proxy"] = out["touches"] / out["offensive_sequence_proxy"].replace(0, np.nan)
-    if "passes_per_offensive_sequence_proxy" not in out.columns and {"total_passes", "offensive_sequence_proxy"}.issubset(out.columns):
-        out["passes_per_offensive_sequence_proxy"] = out["total_passes"] / out["offensive_sequence_proxy"].replace(0, np.nan)
-    return out
-
-
-def pll_profile_matrix(profile_df, away_id, away_name, home_id, home_name, specs):
-    if profile_df is None or len(profile_df) == 0:
-        return pd.DataFrame()
-    away_row = profile_df[profile_df["team_id"].astype(str) == str(away_id)]
-    home_row = profile_df[profile_df["team_id"].astype(str) == str(home_id)]
-    if len(away_row) == 0 or len(home_row) == 0:
-        return pd.DataFrame()
-    away_row = away_row.iloc[0]
-    home_row = home_row.iloc[0]
-    rows = []
-    for label, col, kind, decimals in specs:
-        rows.append({
-            away_name: pll_fmt_profile_value(away_row, col, kind=kind, decimals=decimals),
-            "Stat": label,
-            home_name: pll_fmt_profile_value(home_row, col, kind=kind, decimals=decimals),
-        })
-    return pd.DataFrame(rows)
-
-
-def render_clean_matchup_team_profile(matchup_season, away_id, away_name, home_id, home_name):
-    st.markdown("### Team Season Profile")
-    profile_context = f"{matchup_season} Season"
-    season_profiles = query_df("""
-        SELECT * FROM marts.team_season_stats
-        WHERE season = ? AND team_id IN (?, ?)
-        ORDER BY team_name
-    """, [matchup_season, away_id, home_id])
-    if len(season_profiles) < 2:
-        profile_context = "Career"
-        season_profiles = query_df("""
-            SELECT * FROM marts.team_career_stats
-            WHERE team_id IN (?, ?)
-            ORDER BY team_name
-        """, [away_id, home_id])
-    if len(season_profiles) == 0:
-        st.info("No team profile data found for this matchup.")
-        return
-    season_profiles = pll_add_team_profile_derived_cols(season_profiles)
-    away_profile = season_profiles[season_profiles["team_id"].astype(str) == str(away_id)]
-    home_profile = season_profiles[season_profiles["team_id"].astype(str) == str(home_id)]
-    if len(away_profile) == 0 or len(home_profile) == 0:
-        st.info("Could not find both teams in the selected season profile. Try using career context.")
-        return
-    away_profile = away_profile.iloc[0]
-    home_profile = home_profile.iloc[0]
-    st.caption(f"Context: {profile_context}. Possession time is displayed as clock time, not raw seconds.")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        stat_card(f"{away_name} Record", pll_fmt_profile_value(away_profile, "record_display", kind="record"))
-    with c2:
-        stat_card(f"{away_name} Scores/G", pll_fmt_profile_value(away_profile, "scores_per_game", decimals=2))
-    with c3:
-        stat_card(f"{home_name} Record", pll_fmt_profile_value(home_profile, "record_display", kind="record"))
-    with c4:
-        stat_card(f"{home_name} Scores/G", pll_fmt_profile_value(home_profile, "scores_per_game", decimals=2))
-    per_game_specs = [
-        ("Games", "games", "int", 0), ("Scores/G", "scores_per_game", "number", 2),
-        ("Goals/G", "goals_per_game", "number", 2), ("1PT Goals/G", "one_point_goals_per_game", "number", 2),
-        ("2PT Goals/G", "two_point_goals_per_game", "number", 2), ("Assists/G", "assists_per_game", "number", 2),
-        ("Shots/G", "shots_per_game", "number", 2), ("Shots on Goal/G", "shots_on_goal_per_game", "number", 2),
-        ("Ground Balls/G", "ground_balls_per_game", "number", 2), ("Turnovers/G", "turnovers_per_game", "number", 2),
-        ("Caused Turnovers/G", "caused_turnovers_per_game", "number", 2), ("Saves/G", "saves_per_game", "number", 2),
-        ("Touches/G", "touches_per_game", "number", 2), ("Passes/G", "total_passes_per_game", "number", 2),
-        ("Possession/G", "time_in_possession_per_game", "time_pg", 0),
-        ("Official Possessions/G", "official_total_possessions_per_game", "number", 2),
-        ("Offensive Sequences/G", "offensive_sequence_proxy_per_game", "number", 2),
-    ]
-    total_specs = [
-        ("Games", "games", "int", 0), ("Wins", "wins", "int", 0), ("Losses", "losses", "int", 0),
-        ("Scores", "scores", "int", 0), ("Goals", "goals", "int", 0), ("1PT Goals", "one_point_goals", "int", 0),
-        ("2PT Goals", "two_point_goals", "int", 0), ("Assists", "assists", "int", 0), ("Shots", "shots", "int", 0),
-        ("Shots on Goal", "shots_on_goal", "int", 0), ("Ground Balls", "ground_balls", "int", 0),
-        ("Turnovers", "turnovers", "int", 0), ("Caused Turnovers", "caused_turnovers", "int", 0),
-        ("Faceoffs", "faceoffs", "int", 0), ("Faceoffs Won", "faceoffs_won", "int", 0),
-        ("Faceoffs Lost", "faceoffs_lost", "int", 0), ("Saves", "saves", "int", 0),
-        ("Touches", "touches", "int", 0), ("Passes", "total_passes", "int", 0),
-        ("Total Possession Time", "time_in_possession", "time_total", 0),
-        ("Official Possessions", "official_total_possessions", "number", 0),
-        ("Offensive Sequences", "offensive_sequence_proxy", "int", 0),
-    ]
-    rate_specs = [
-        ("Win %", "win_pct", "pct", 1), ("Shot %", "shot_pct_calc", "pct", 1),
-        ("SOG Rate", "shots_on_goal_rate_calc", "pct", 1), ("Faceoff %", "faceoff_pct_calc", "pct", 1),
-        ("Clear %", "clear_pct_calc", "pct", 1), ("Save %", "save_pct_calc", "pct", 1),
-        ("Passes/Touch", "passes_per_touch", "number", 2),
-        ("Touches/Sequence", "touches_per_offensive_sequence_proxy", "number", 2),
-        ("Passes/Sequence", "passes_per_offensive_sequence_proxy", "number", 2),
-        ("Seconds/Touch", "seconds_possession_per_touch", "number", 2),
-    ]
-    possession_specs = [
-        ("Touches/G", "touches_per_game", "number", 2), ("Total Touches", "touches", "int", 0),
-        ("Passes/G", "total_passes_per_game", "number", 2), ("Total Passes", "total_passes", "int", 0),
-        ("Possession/G", "time_in_possession_per_game", "time_pg", 0),
-        ("Total Possession Time", "time_in_possession", "time_total", 0),
-        ("Official Possessions/G", "official_total_possessions_per_game", "number", 2),
-        ("Official Possessions", "official_total_possessions", "number", 0),
-        ("Offensive Sequences/G", "offensive_sequence_proxy_per_game", "number", 2),
-        ("Offensive Sequences", "offensive_sequence_proxy", "int", 0),
-        ("Passes/Touch", "passes_per_touch", "number", 2),
-        ("Touches/Sequence", "touches_per_offensive_sequence_proxy", "number", 2),
-        ("Seconds/Touch", "seconds_possession_per_touch", "number", 2),
-    ]
-    _profile_view = st.radio(
-        "Team profile view",
-        options=["Per Game", "Totals", "Rates", "Possession / Touches"],
-        horizontal=True,
-        key=f"matchup_team_profile_view_{away_id}_{home_id}",
-    )
-    if _profile_view == "Per Game":
-        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, per_game_specs), height=520)
-    elif _profile_view == "Totals":
-        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, total_specs), height=560)
-    elif _profile_view == "Rates":
-        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, rate_specs), height=420)
-    else:
-        display_table(pll_profile_matrix(season_profiles, away_id, away_name, home_id, home_name, possession_specs), height=520)
-        st.caption(
-            "Possession time is based on the provider possession-time field converted from seconds. "
-            "For games with missing or unusual provider possession timing, review the Possession Data QC section."
-        )
-
-
-def filter_team_string(df, team_id_col_value):
-    if df is None or len(df) == 0:
-        return df
-    if "teams" not in df.columns:
-        return df
-    return df[df["teams"].fillna("").astype(str).str.contains(str(team_id_col_value), regex=False)].copy()
-
-
-# ============================================================
-# PAGE CONTENT
-# ============================================================
-
-st.subheader("Matchup Preview")
-st.markdown('<div class="section-note">Select a scheduled or completed game and compare team form, season profile, head-to-head history, and key players.</div>', unsafe_allow_html=True)
-
-schedule_fixed = schedule_display_table().copy()
-schedule_fixed["game_date_display"] = pd.to_datetime(schedule_fixed["game_date_guess"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-matchup_status_filter = st.radio(
-    "Game group",
-    options=["Upcoming / Scheduled", "Completed / Final", "All Games"],
+group_options = ["Upcoming", "Final", "All"]
+# A completed season has no upcoming games, so defaulting to Upcoming there lands
+# the reader on an empty page. The default follows the season being viewed.
+group = controls[1].radio(
+    "Show",
+    options=group_options,
+    index=0 if (pool["stage"] == "Upcoming").any() else 1,
     horizontal=True,
-    key="matchup_status_filter"
+    key=f"matchup_group_{season}",
+    help="Awaiting stats — kickoff has passed but the box score has not landed "
+         "in the warehouse yet — is included under All.",
 )
 
-matchup_season = st.selectbox(
-    "Matchup season",
-    options=seasons,
-    index=len(seasons) - 1 if seasons else 0,
-    key="matchup_season"
-)
-
-matchup_pool = schedule_fixed[schedule_fixed["season"] == matchup_season].copy()
-
-if matchup_status_filter == "Upcoming / Scheduled":
-    matchup_pool = matchup_pool[matchup_pool["status_display"] != "final"].copy()
-elif matchup_status_filter == "Completed / Final":
-    matchup_pool = matchup_pool[matchup_pool["status_display"] == "final"].copy()
-
-if len(matchup_pool) == 0:
-    st.info("No games available for this filter.")
+if group == "Upcoming":
+    shown = pool[pool["stage"] == "Upcoming"].sort_values("kickoff")
+elif group == "Final":
+    shown = pool[pool["stage"] == "Final"].sort_values("kickoff", ascending=False)
 else:
-    matchup_pool = matchup_pool.sort_values(["game_number", "game_date_guess"]).reset_index(drop=True)
-    matchup_pool["matchup_label"] = (
-        matchup_pool["season"].astype(str)
-        + " G"
-        + matchup_pool["game_number"].astype(str)
-        + ": "
-        + matchup_pool["away_team_name"].astype(str)
-        + " at "
-        + matchup_pool["home_team_name"].astype(str)
-        + " — "
-        + matchup_pool["game_date_display"].astype(str)
-        + " — "
-        + matchup_pool["status_display"].astype(str)
+    shown = pool.sort_values("kickoff")
+
+if len(shown) == 0:
+    st.info(f"No {group.lower()} games in {season}.")
+    st.stop()
+
+shown = shown.reset_index(drop=True)
+shown["when"] = shown["kickoff_local"].dt.strftime("%a %d %b %Y").fillna("date TBD")
+shown["label"] = (
+    "G" + shown["game_number"].astype("Int64").astype(str) + " · "
+    + shown["away_team_name"].astype(str) + " at " + shown["home_team_name"].astype(str)
+    + " · " + shown["when"].astype(str) + " · " + shown["stage"].astype(str)
+)
+
+# On All, open on the next game by clock rather than the first row, so the page
+# lands on the matchup a reader is most likely to want.
+default_row = 0
+if group == "All":
+    upcoming_rows = shown.index[shown["stage"] == "Upcoming"].tolist()
+    if upcoming_rows:
+        default_row = upcoming_rows[0]
+
+label = st.selectbox("Game", options=shown["label"].tolist(), index=default_row,
+                     key="matchup_game")
+game = shown[shown["label"] == label].iloc[0]
+
+away_id, home_id = game["away_team_id"], game["home_team_id"]
+away_name, home_name = str(game["away_team_name"]), str(game["home_team_name"])
+game_id = game.get("event_id")
+stage = str(game["stage"])
+is_played = stage == "Final"
+
+# ============================================================
+# SCOREBOARD
+# ============================================================
+
+when = game.get("kickoff_local")
+when_text = "date TBD" if pd.isna(when) else when.strftime("%a %d %b %Y, %H:%M %Z")
+
+ui.scoreboard(
+    away_name, game.get("away_score"), home_name, game.get("home_score"),
+    meta=f"{stage.upper()}<br>{when_text}",
+    away_sub="Away", home_sub="Home",
+)
+
+if stage == "Awaiting stats":
+    ui.note_box(
+        "Stats have not landed for this game",
+        "Kickoff has passed but the box score is not in the warehouse yet, so "
+        "this game contributes nothing to the season and form figures below.",
     )
 
-    selected_matchup_label = st.selectbox(
-        "Select game",
-        options=matchup_pool["matchup_label"].tolist(),
-        index=0,
-        key="selected_matchup_label"
+# ============================================================
+# DATA
+# ============================================================
+
+pair = [away_id, home_id]
+
+
+def _two_team_frame(sql: str, params: list) -> pd.DataFrame:
+    """Query rows for the two teams, ordered away-then-home so columns read L→R."""
+    df = query_df(sql, params)
+    if len(df) == 0 or "team_id" not in df.columns:
+        return df
+    order = {str(away_id): 0, str(home_id): 1}
+    df = df.copy()
+    df["_side"] = df["team_id"].astype(str).map(order)
+    return df.sort_values("_side").drop(columns="_side")
+
+
+league = query_df("SELECT * FROM marts.team_season_stats WHERE season = ?", [season])
+league_defense = pd.DataFrame()
+if table_exists("marts", "team_defense_season_stats"):
+    league_defense = query_df(
+        "SELECT * FROM marts.team_defense_season_stats WHERE season = ?", [season])
+
+profile_context = f"{season} season"
+if league["team_id"].astype(str).isin([str(x) for x in pair]).sum() < 2:
+    # A team can be absent from a season (expansion, relocation), in which case
+    # the season table cannot compare the two and career is the honest fallback.
+    profile_context = "career (both teams are not in this season's table)"
+    league = query_df("SELECT * FROM marts.team_career_stats")
+    league_defense = (query_df("SELECT * FROM marts.team_defense_career_stats")
+                      if table_exists("marts", "team_defense_career_stats")
+                      else pd.DataFrame())
+
+if len(league) == 0:
+    st.info("No team data is available for this matchup.")
+    st.stop()
+
+
+def _merge_defense(teams: pd.DataFrame, defense: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add the allowed/opponent columns to the offensive frame.
+
+    Only columns the offensive mart does not already have are taken, and the
+    defensive mart's `team_*` mirrors of own-team stats are dropped: they restate
+    columns already present under their plain names and would double every row of
+    the comparison table.
+    """
+    if defense is None or len(defense) == 0 or "team_id" not in defense.columns:
+        return teams
+    keep = ["team_id"] + [
+        c for c in defense.columns
+        if c not in teams.columns and not c.startswith("team_") and c != "team_id"
+    ]
+    return teams.merge(defense[keep], on="team_id", how="left")
+
+
+league = _merge_defense(league, league_defense)
+league = analysis.add_per_100_possessions(league)
+
+# The single best "who is better" column available, and the warehouse does not
+# ship it.
+if {"scores_per_100_poss", "scores_allowed_per_100_poss"}.issubset(league.columns):
+    league["net_efficiency_per_100_poss"] = (
+        pd.to_numeric(league["scores_per_100_poss"], errors="coerce")
+        - pd.to_numeric(league["scores_allowed_per_100_poss"], errors="coerce")
     )
 
-    matchup = matchup_pool[matchup_pool["matchup_label"] == selected_matchup_label].iloc[0]
-
-    away_id = matchup["away_team_id"]
-    home_id = matchup["home_team_id"]
-    away_name = matchup["away_team_name"]
-    home_name = matchup["home_team_name"]
-
-    profile_header(
-        f"{away_name} at {home_name}",
-        f"{matchup.get('game_date_display', '—')} | Season {matchup_season} | Game {fmt_value(matchup.get('game_number', np.nan), 0)} | Status: {matchup.get('status_display', '—')}"
+if {"wins", "losses"}.issubset(league.columns):
+    league["record_display"] = (
+        pd.to_numeric(league["wins"], errors="coerce").fillna(0).astype(int).astype(str)
+        + "-"
+        + pd.to_numeric(league["losses"], errors="coerce").fillna(0).astype(int).astype(str)
     )
 
-    render_matchup_scoreboard(matchup, away_name, home_name)
-    render_completed_game_review(matchup, away_id, away_name, home_id, home_name)
-    render_clean_matchup_team_profile(matchup_season, away_id, away_name, home_id, home_name)
+league_by_id = league.set_index(league["team_id"].astype(str))
+away_row = league_by_id.loc[str(away_id)] if str(away_id) in league_by_id.index else None
+home_row = league_by_id.loc[str(home_id)] if str(home_id) in league_by_id.index else None
 
-    st.markdown("### Defense / Opponent Allowance Profile")
+teams_pair = league[league["team_id"].astype(str).isin([str(away_id), str(home_id)])].copy()
+teams_pair["_side"] = teams_pair["team_id"].astype(str).map(
+    {str(away_id): 0, str(home_id): 1})
+teams_pair = teams_pair.sort_values("_side").drop(columns="_side")
 
-    if table_exists("marts", "team_defense_season_stats"):
-        defense_profiles = query_df("""
-            SELECT * FROM marts.team_defense_season_stats
-            WHERE season = ? AND team_id IN (?, ?)
-            ORDER BY team_name
-        """, [matchup_season, away_id, home_id])
+st.caption(f"Team figures below cover the {profile_context}. "
+           f"Ranks are within the {len(league)} teams in that table.")
 
-        if len(defense_profiles) < 2:
-            defense_profiles = query_df("""
-                SELECT * FROM marts.team_defense_career_stats
-                WHERE team_id IN (?, ?)
-                ORDER BY team_name
-            """, [away_id, home_id])
+# ============================================================
+# THE MATCHUP
+# ============================================================
+#
+# A preview's central question is one team's offence against the other's defence,
+# so that comparison leads rather than sitting in a section at the bottom.
 
-        defense_matchup_metrics = [
-            "games", "scores_allowed_per_game", "goals_allowed_per_game",
-            "opponent_shots_per_game", "opponent_goal_pct", "opponent_sog_rate",
-            "save_pct_proxy", "caused_turnovers_for_per_game",
-            "opponent_turnovers_per_game", "ct_per_opponent_turnover", "score_margin_per_game",
-        ]
+OFF_KEY = "scores_per_100_poss"
+DEF_KEY = "scores_allowed_per_100_poss"
 
-        profile_summary_cards(
-            defense_profiles,
-            title_col="team_name",
-            specs=[
-                ("Scores Allowed/G", "scores_allowed_per_game"),
-                ("Opp Shots/G", "opponent_shots_per_game"),
-                ("Opp Goal %", "opponent_goal_pct", True),
-                ("Save % Proxy", "save_pct_proxy", True),
-                ("CT/G", "caused_turnovers_for_per_game"),
-            ],
-            columns=2
+if away_row is not None and home_row is not None and \
+        {OFF_KEY, DEF_KEY}.issubset(league.columns):
+    ui.section(
+        "The matchup",
+        "Each team's offence against the other's defence, per 100 offensive "
+        "sequences so pace does not flatter the faster team.",
+    )
+    edge = st.columns(4)
+    for col, (label_text, row, key) in zip(edge, [
+        (f"{away_name} offence", away_row, OFF_KEY),
+        (f"{home_name} defence", home_row, DEF_KEY),
+        (f"{home_name} offence", home_row, OFF_KEY),
+        (f"{away_name} defence", away_row, DEF_KEY),
+    ]):
+        with col:
+            ui.stat_card(
+                label_text,
+                M.format_value(key, row.get(key, np.nan)),
+                sub=analysis.rank_text(league, key, row.name) or M.label(key),
+            )
+
+    if "net_efficiency_per_100_poss" in league.columns:
+        net = st.columns(2)
+        for col, (name, row) in zip(net, [(away_name, away_row), (home_name, home_row)]):
+            with col:
+                ui.stat_card(
+                    f"{name} net efficiency",
+                    M.format_value("net_efficiency_per_100_poss",
+                                   row.get("net_efficiency_per_100_poss", np.nan)),
+                    sub=analysis.rank_text(league, "net_efficiency_per_100_poss",
+                                           row.name) or None,
+                )
+
+    ui.definition_caption([OFF_KEY, DEF_KEY, "net_efficiency_per_100_poss",
+                           "offensive_sequence_proxy_per_game"])
+
+    coverage = analysis.possession_coverage(league)
+    if coverage < 0.98:
+        st.warning(
+            f"Possession data covers {coverage:.0%} of rows in this table, so the "
+            "per-100 figures are based on partial data."
         )
 
-        display_comparison_matrix(defense_profiles, "team_name", defense_matchup_metrics, height=420)
+# ============================================================
+# TABS
+# ============================================================
 
-        matchup_defense_metric_options = [m for m in defense_matchup_metrics if m in defense_profiles.columns]
+tab_names = ["Season profile", "Recent form", "Head to head", "Key players"]
+if is_played:
+    tab_names.append("Box score")
+tabs = st.tabs(tab_names)
 
-        if matchup_defense_metric_options:
-            matchup_defense_metric = st.selectbox(
-                "Defense matchup chart metric",
-                options=matchup_defense_metric_options,
-                index=1 if "scores_allowed_per_game" in matchup_defense_metric_options else 0,
-                format_func=pretty_col,
-                key="matchup_defense_metric"
-            )
+# ------------------------------------------------------------
+# SEASON PROFILE
+# ------------------------------------------------------------
 
-            safe_bar_chart(
-                defense_profiles.sort_values(matchup_defense_metric),
-                x_col="team_name",
-                y_col=matchup_defense_metric,
-                color_col="team_name",
-                title=f"Matchup Defensive Comparison — {pretty_col(matchup_defense_metric)}",
-                orientation="h"
-            )
+# Metric groups, not one 98-column dump. Every list is generous on purpose:
+# display_comparison_matrix drops what the table does not carry, so the career
+# fallback and the season table can share these definitions.
+PROFILE_VIEWS = {
+    "Per game": [
+        "games", "record_display", "win_pct", "scores_per_game",
+        "score_margin_per_game", "goals_per_game", "one_point_goals_per_game",
+        "two_point_goals_per_game", "assists_per_game", "shots_per_game",
+        "shots_on_goal_per_game", "ground_balls_per_game", "turnovers_per_game",
+        "caused_turnovers_per_game", "saves_per_game", "touches_per_game",
+        "total_passes_per_game", "time_in_possession_per_game",
+        "offensive_sequence_proxy_per_game",
+    ],
+    "Efficiency": [
+        "scores_per_100_poss", "goals_per_100_poss", "shots_per_100_poss",
+        "assists_per_100_poss", "turnovers_per_100_poss",
+        "caused_turnovers_per_100_poss", "ground_balls_per_100_poss",
+        "touches_per_100_poss", "scores_allowed_per_100_poss",
+        "goals_allowed_per_100_poss", "net_efficiency_per_100_poss",
+        "offensive_sequence_proxy_per_game",
+    ],
+    "Shooting and possession": [
+        "shot_pct_calc", "shots_on_goal_rate_calc", "faceoff_pct_calc",
+        "clear_pct_calc", "passes_per_touch", "seconds_possession_per_touch",
+        "touches_per_offensive_sequence_proxy",
+        "passes_per_offensive_sequence_proxy", "time_in_possession_per_game",
+        "official_total_possessions_per_game",
+    ],
+    "Special situations": [
+        "times_man_up_per_game", "power_play_goals_per_game",
+        "power_play_shots_per_game", "times_short_handed_per_game",
+        "power_play_goals_against_per_game", "clear_pct_calc",
+        "clear_attempts_per_game", "ride_attempts_per_game",
+        "shot_clock_expirations_per_game", "num_penalties_per_game",
+        "pim_per_game",
+    ],
+    "Defence and allowed": [
+        "scores_allowed_per_game", "goals_allowed_per_game",
+        "assists_allowed_per_game", "one_point_goals_allowed_per_game",
+        "two_point_goals_allowed_per_game", "opponent_shots_per_game",
+        "opponent_shots_on_goal_per_game", "opponent_goal_pct",
+        "opponent_sog_rate", "opponent_sog_goal_pct", "save_pct_proxy",
+        "caused_turnovers_for_per_game", "opponent_turnovers_per_game",
+        "ct_per_opponent_turnover", "opponent_touches_per_game",
+        "opponent_offensive_sequence_proxy_per_game",
+        "opponent_scores_per_offensive_sequence_proxy",
+        "scores_allowed_per_100_poss",
+    ],
+    "Totals": [
+        "games", "wins", "losses", "ties", "scores", "goals", "one_point_goals",
+        "two_point_goals", "assists", "shots", "shots_on_goal", "ground_balls",
+        "turnovers", "caused_turnovers", "faceoffs", "faceoffs_won",
+        "faceoffs_lost", "saves", "clears", "clear_attempts", "ride_attempts",
+        "times_man_up", "times_short_handed", "power_play_goals",
+        "shot_clock_expirations", "num_penalties", "pim", "touches",
+        "total_passes", "time_in_possession", "offensive_sequence_proxy",
+        "official_total_possessions",
+    ],
+}
+
+with tabs[0]:
+    if len(teams_pair) < 2:
+        st.info("Both teams are not present in this table, so they cannot be compared.")
     else:
-        st.info("Defensive/opponent marts are not available in the warehouse yet.")
+        summary_specs = [
+            ("Record", "record_display"),
+            ("Scores/G", "scores_per_game"),
+            ("Scores Allowed/G", "scores_allowed_per_game"),
+            ("Scores/100 Poss", "scores_per_100_poss"),
+            ("Shot %", "shot_pct_calc"),
+            ("FO Win %", "faceoff_pct_calc"),
+        ]
+        ui.profile_summary_cards(teams_pair, "team_name", summary_specs, columns=2)
 
-    st.markdown("### Current Form")
+        view = st.radio("Profile view", options=list(PROFILE_VIEWS),
+                        horizontal=True, key="matchup_profile_view")
+        keys = PROFILE_VIEWS[view]
+        # The "Best" column comes from each metric's direction, so a reader does
+        # not have to know which end of Turnovers/G is good.
+        ui.display_comparison_matrix(teams_pair, "team_name", keys, height=520)
+        ui.definition_caption(M.with_data(teams_pair, keys)[:10])
 
-    last5 = query_df("""
-        SELECT * FROM marts.team_last5_stats
-        WHERE team_id IN (?, ?)
-        ORDER BY team_name
-    """, [away_id, home_id])
+        chart_options = M.with_data(league, keys)
+        chart_metric = ui.metric_selectbox(
+            "Chart this metric against the league", options=chart_options,
+            key="matchup_profile_chart",
+            default=next((k for k in ("scores_per_100_poss", "scores_per_game")
+                          if k in chart_options), None),
+        )
+        if chart_metric:
+            # The whole league, with the two teams named, answers "is that good?"
+            # in a way a two-bar chart cannot.
+            chart_df = league.copy()
+            chart_df["side"] = np.where(
+                chart_df["team_id"].astype(str) == str(away_id), away_name,
+                np.where(chart_df["team_id"].astype(str) == str(home_id), home_name,
+                         "Rest of league"))
+            ui.safe_bar_chart(
+                M.sort_df(chart_df, chart_metric),
+                x_col="team_name", y_col=chart_metric, color_col="side",
+                title=f"{M.label(chart_metric)} — {profile_context}",
+                orientation="h", height=440,
+            )
 
-    last10 = query_df("""
-        SELECT * FROM marts.team_last10_stats
-        WHERE team_id IN (?, ?)
-        ORDER BY team_name
-    """, [away_id, home_id])
+# ------------------------------------------------------------
+# RECENT FORM
+# ------------------------------------------------------------
 
-    form_context = st.radio(
-        "Form window",
-        options=["Last 5", "Last 10"],
-        horizontal=True,
-        key="matchup_form_window"
-    )
+with tabs[1]:
+    window = st.radio("Form window", options=["Last 5", "Last 10"],
+                      horizontal=True, key="matchup_form_window")
+    # Season-scoped, not the league-wide last5/last10 marts: those hold only the
+    # most recent games played anywhere, so previewing an older season through
+    # them showed the current season's form.
+    form_table = ("marts.team_season_last5_stats" if window == "Last 5"
+                  else "marts.team_season_last10_stats")
+    form = _two_team_frame(
+        f"SELECT * FROM {form_table} WHERE season = ? AND team_id IN (?, ?)",
+        [season, away_id, home_id])
 
-    form_df = last5 if form_context == "Last 5" else last10
+    if len(form) == 0:
+        st.info(f"No {window.lower()} rows for these teams in {season}.")
+    else:
+        form = analysis.add_per_100_possessions(form)
+        st.caption(
+            f"{window} completed games of the {season} season for each team, which "
+            "may cover different dates if the two have played a different number "
+            "of games."
+        )
+        form_keys = [
+            "games", "first_game_date", "last_game_date", "scores_per_game",
+            "scores_against_per_game", "scores_per_100_poss", "shots_per_game",
+            "shot_pct_calc", "goals_per_game", "assists_per_game",
+            "ground_balls_per_game", "turnovers_per_game",
+            "caused_turnovers_per_game", "saves_per_game", "faceoff_pct_calc",
+            "clear_pct_calc", "touches_per_game", "time_in_possession_per_game",
+            "offensive_sequence_proxy_per_game",
+        ]
+        ui.display_comparison_matrix(form, "team_name", form_keys, height=460)
 
-    form_metrics = [
-        "games", "scores_per_game", "shots_per_game", "turnovers_per_game",
-        "saves_per_game", "faceoff_pct_calc", "clear_pct_calc",
-        "touches_per_game", "time_in_possession_per_game",
-        "offensive_sequence_proxy_per_game"
-    ]
+    # An aggregate hides the shape of a run, so the game-by-game series follows.
+    ui.section("Game by game",
+               "Both teams' completed games this season, with a rolling average.")
+    trend = query_df(
+        """
+        SELECT season, game_number, game_date_utc, team_id, team_name,
+               opponent_team_name, result, scores, scores_against, score_margin,
+               shots, shot_pct, ground_balls, turnovers, caused_turnovers,
+               saves, save_pct, faceoff_pct, clear_pct, touches, total_passes,
+               time_in_possession, offensive_sequence_proxy
+        FROM clean.team_game_stats
+        WHERE season = ? AND team_id IN (?, ?)
+        ORDER BY game_date_utc, game_number
+        """, [season, away_id, home_id])
 
-    display_comparison_matrix(form_df, "team_name", form_metrics, height=420)
+    if len(trend) == 0:
+        st.info(f"No completed games for these teams in {season}.")
+    else:
+        trend_options = M.with_data(trend, [
+            "scores", "scores_against", "score_margin", "shots", "shot_pct",
+            "ground_balls", "turnovers", "caused_turnovers", "saves", "save_pct",
+            "faceoff_pct", "clear_pct", "touches", "offensive_sequence_proxy",
+        ])
+        trend_metric = ui.metric_selectbox(
+            "Game-by-game metric", options=trend_options, key="matchup_trend_metric",
+            default="scores" if "scores" in trend_options else None)
 
-    form_chart_metric = st.selectbox(
-        "Form chart metric",
-        options=[m for m in form_metrics if m in form_df.columns],
-        index=1 if "scores_per_game" in form_df.columns else 0,
-        format_func=pretty_col,
-        key="matchup_form_metric"
-    )
+        if trend_metric:
+            # add_rolling sorts by season/game_number, so it is applied per team
+            # rather than across the interleaved frame.
+            rolled = pd.concat(
+                [analysis.add_rolling(part, trend_metric, window=3)
+                 for _, part in trend.groupby("team_id")],
+                ignore_index=True,
+            )
+            rolled["game_label"] = "G" + rolled["game_number"].astype("Int64").astype(str)
+            ui.safe_line_chart(
+                rolled.sort_values(["game_number"]),
+                x_col="game_label", y_cols=[trend_metric], color_col="team_name",
+                title=f"{M.label(trend_metric)} by game — {season}",
+            )
+            st.caption(
+                f"Three-game rolling average is in the table below as "
+                f"{M.label(trend_metric)} Roll3."
+            )
+            show_cols = M.existing(rolled, [
+                "team_name", "game_number", "game_date_utc", "opponent_team_name",
+                "result", "scores", "scores_against", trend_metric,
+                f"{trend_metric}_roll3",
+            ])
+            ui.display_table(rolled[show_cols], height=360,
+                             date_cols=["game_date_utc"], clean_schema=True)
 
-    safe_bar_chart(
-        form_df.sort_values(form_chart_metric),
-        x_col="team_name",
-        y_col=form_chart_metric,
-        color_col="team_name",
-        title=f"{form_context} Matchup Comparison — {pretty_col(form_chart_metric)}",
-        orientation="h"
-    )
+# ------------------------------------------------------------
+# HEAD TO HEAD
+# ------------------------------------------------------------
 
-    st.markdown("### Head-to-Head History")
+with tabs[2]:
+    # The vs-opponent marts are all-time, not per season — saying so matters,
+    # because the section sits under a season-scoped page.
+    st.caption("All-time meetings between these two teams, across every season "
+               "in the warehouse.")
 
-    h2h = query_df("""
-        SELECT
-            team_name, opponent_team_name, games, scores, scores_per_game,
-            goals, assists, shots, shots_per_game, saves, turnovers,
-            turnovers_per_game, ground_balls, caused_turnovers,
-            faceoff_pct_calc, clear_pct_calc
-        FROM marts.team_vs_opponent_stats
+    h2h = _two_team_frame(
+        """
+        SELECT * FROM marts.team_vs_opponent_stats
         WHERE (team_id = ? AND opponent_team_id = ?)
            OR (team_id = ? AND opponent_team_id = ?)
-        ORDER BY team_name
-    """, [away_id, home_id, home_id, away_id])
+        """, [away_id, home_id, home_id, away_id])
 
-    h2h_metrics = [
-        "games", "scores", "scores_per_game", "goals", "assists",
-        "shots", "shots_per_game", "saves", "turnovers", "turnovers_per_game",
-        "ground_balls", "caused_turnovers", "faceoff_pct_calc", "clear_pct_calc"
-    ]
+    if len(h2h) == 0:
+        st.info("These two teams have not met in the seasons the warehouse covers.")
+    else:
+        h2h = analysis.add_per_100_possessions(h2h)
+        ui.display_comparison_matrix(h2h, "team_name", [
+            "games", "scores_per_game", "scores_against_per_game",
+            "scores_per_100_poss", "goals_per_game", "assists_per_game",
+            "shots_per_game", "shot_pct_calc", "ground_balls_per_game",
+            "turnovers_per_game", "caused_turnovers_per_game", "saves_per_game",
+            "faceoff_pct_calc", "clear_pct_calc", "touches_per_game",
+        ], height=440)
 
-    display_comparison_matrix(h2h, "team_name", h2h_metrics, height=360)
-
-    h2h_games = query_df("""
+    h2h_games = query_df(
+        """
         WITH a AS (
-            SELECT * FROM clean.team_game_stats WHERE team_id = ? AND opponent_team_id = ?
-        ),
-        b AS (
-            SELECT * FROM clean.team_game_stats WHERE team_id = ? AND opponent_team_id = ?
+            SELECT * FROM clean.team_game_stats
+            WHERE team_id = ? AND opponent_team_id = ?
+        ), b AS (
+            SELECT * FROM clean.team_game_stats
+            WHERE team_id = ? AND opponent_team_id = ?
         )
         SELECT
             a.season, a.game_number, a.game_date_utc,
-            a.team_name AS team_a, a.scores AS team_a_score,
-            b.team_name AS team_b, b.scores AS team_b_score,
-            CASE WHEN a.scores > b.scores THEN a.team_name WHEN b.scores > a.scores THEN b.team_name ELSE 'Tie' END AS winner,
-            a.shots AS team_a_shots, b.shots AS team_b_shots,
-            a.turnovers AS team_a_turnovers, b.turnovers AS team_b_turnovers,
-            a.ground_balls AS team_a_ground_balls, b.ground_balls AS team_b_ground_balls,
-            a.caused_turnovers AS team_a_caused_turnovers, b.caused_turnovers AS team_b_caused_turnovers,
-            a.time_in_possession AS team_a_possession, b.time_in_possession AS team_b_possession
-        FROM a
-        INNER JOIN b ON a.game_id = b.game_id
+            a.team_name AS away_or_a, a.scores AS a_scores,
+            b.team_name AS home_or_b, b.scores AS b_scores,
+            CASE WHEN a.scores > b.scores THEN a.team_name
+                 WHEN b.scores > a.scores THEN b.team_name
+                 ELSE 'Tie' END AS winner,
+            a.shots AS a_shots, b.shots AS b_shots,
+            a.turnovers AS a_turnovers, b.turnovers AS b_turnovers,
+            a.ground_balls AS a_ground_balls, b.ground_balls AS b_ground_balls,
+            a.caused_turnovers AS a_caused_turnovers,
+            b.caused_turnovers AS b_caused_turnovers
+        FROM a INNER JOIN b ON a.game_id = b.game_id
         ORDER BY a.season DESC, a.game_number DESC
-    """, [away_id, home_id, home_id, away_id])
+        """, [away_id, home_id, home_id, away_id])
 
-    with st.expander("Show head-to-head game log", expanded=False):
-        display_table(h2h_games, height=320)
+    if len(h2h_games):
+        wins = h2h_games["winner"].value_counts()
+        record = st.columns(3)
+        with record[0]:
+            ui.stat_card(f"{away_name} wins", f"{int(wins.get(away_name, 0)):,}")
+        with record[1]:
+            ui.stat_card(f"{home_name} wins", f"{int(wins.get(home_name, 0)):,}")
+        with record[2]:
+            ui.stat_card("Meetings", f"{len(h2h_games):,}",
+                         sub=f"{int(wins.get('Tie', 0))} tied"
+                             if wins.get("Tie", 0) else None)
 
-    st.markdown("### Key Player Form")
+        ui.section("Meeting log")
+        ui.display_table(h2h_games, height=380, date_cols=["game_date_utc"],
+                         clean_schema=True)
+        ui.download_csv(h2h_games,
+                        f"{away_name}_vs_{home_name}_h2h.csv".replace(" ", "_").lower())
 
-    player_form_source = st.radio(
-        "Player form source",
-        options=["Season", "Last 5", "Last 10"],
-        horizontal=True,
-        key="matchup_key_player_source"
-    )
+# ------------------------------------------------------------
+# KEY PLAYERS
+# ------------------------------------------------------------
 
-    player_form_metric = st.selectbox(
-        "Key player metric",
-        options=["points_per_game", "goals_per_game", "assists_per_game", "shots_per_game", "ground_balls_per_game", "caused_turnovers_per_game"],
-        index=0,
-        format_func=pretty_col,
-        key="matchup_key_player_metric"
-    )
 
-    if player_form_source == "Season":
-        key_players = query_df("""
-            SELECT full_name, position, teams, games, points, goals, assists, shots,
-                   ground_balls, caused_turnovers, points_per_game, goals_per_game,
-                   assists_per_game, shots_per_game, ground_balls_per_game, caused_turnovers_per_game
-            FROM marts.player_season_stats
-            WHERE season = ? AND games >= 1
-            ORDER BY points_per_game DESC NULLS LAST
-        """, [matchup_season])
-    elif player_form_source == "Last 5":
-        key_players = query_df("""
-            SELECT full_name, position, teams, games, points, goals, assists, shots,
-                   ground_balls, caused_turnovers, points_per_game, goals_per_game,
-                   assists_per_game, shots_per_game, ground_balls_per_game, caused_turnovers_per_game
-            FROM marts.player_last5_stats
-            WHERE games >= 1
-            ORDER BY points_per_game DESC NULLS LAST
-        """)
+def _players_for_team(df: pd.DataFrame, team_id) -> pd.DataFrame:
+    """
+    Rows for one team, whether the mart carries `team_id` or only `teams`.
+
+    The season view uses `player_season_stats_by_team`, which has a real
+    `team_id` and one row per team a player appeared for. The recent-form marts
+    have neither: they carry a pipe-delimited `teams` string ("ATL|WHP") and a
+    single set of totals covering both stints. Matt Rambo's 2026 season is 4
+    games and 5 points for Atlas plus 1 game and 0 points for Whipsnakes, and the
+    old substring match on `teams` listed him under *both* teams with the
+    combined 5 games and 5 points — so a mid-season arrival was previewed as
+    though he had produced his whole season for his new team. The season view now
+    reads the by-team mart; the recent-form views can only split on the
+    delimiter, which at least keeps a player off a team he never played for.
+    """
+    if df is None or len(df) == 0:
+        return df
+    if "team_id" in df.columns:
+        return df[df["team_id"].astype(str) == str(team_id)].copy()
+    if "teams" not in df.columns:
+        return df.iloc[0:0].copy()
+    codes = df["teams"].fillna("").astype(str).str.split("|")
+    return df[codes.apply(lambda parts: str(team_id) in [p.strip() for p in parts])].copy()
+
+
+with tabs[3]:
+    source = st.radio("Player form source",
+                      options=["Season", "Last 5", "Last 10"],
+                      horizontal=True, key="matchup_player_source")
+
+    if source == "Season":
+        # by_team splits a traded player's season, so a mid-season arrival is
+        # credited to the team he actually played these games for.
+        key_players = query_df(
+            "SELECT * FROM marts.player_season_stats_by_team WHERE season = ?",
+            [season])
     else:
-        key_players = query_df("""
-            SELECT full_name, position, teams, games, points, goals, assists, shots,
-                   ground_balls, caused_turnovers, points_per_game, goals_per_game,
-                   assists_per_game, shots_per_game, ground_balls_per_game, caused_turnovers_per_game
-            FROM marts.player_last10_stats
-            WHERE games >= 1
-            ORDER BY points_per_game DESC NULLS LAST
-        """)
+        split_table = ("marts.player_season_last5_stats" if source == "Last 5"
+                       else "marts.player_season_last10_stats")
+        key_players = query_df(f"SELECT * FROM {split_table} WHERE season = ?",
+                               [season])
 
-    away_players = filter_team_string(key_players, away_id).sort_values(player_form_metric, ascending=False).head(10)
-    home_players = filter_team_string(key_players, home_id).sort_values(player_form_metric, ascending=False).head(10)
+    if len(key_players) == 0:
+        st.info(f"No {source.lower()} player rows for {season}.")
+    else:
+        key_players = roles.add_role_column(key_players)
 
-    kp1, kp2 = st.columns(2)
+        picker = st.columns([2, 1, 1])
+        role_options = ["All"] + [roles.role_label(r) for r in roles.ROLE_ORDER
+                                  if (key_players["role_group"] == r).any()]
+        role_choice = picker[1].radio("Role", options=role_options,
+                                      key="matchup_player_role")
+        top_n = picker[2].number_input("Players per team", min_value=3, max_value=25,
+                                      value=8, step=1, key="matchup_player_top_n")
 
-    with kp1:
-        st.markdown(f"#### {away_name} Key Players")
-        safe_bar_chart(
-            away_players.sort_values(player_form_metric),
-            x_col="full_name",
-            y_col=player_form_metric,
-            color_col="position",
-            title=f"{away_name} — {pretty_col(player_form_metric)}",
-            orientation="h"
-        )
-        display_table(away_players, height=320)
+        # Role decides which metrics are worth ranking by: a defender sorted on
+        # Points/G is a list of the wrong defenders.
+        if role_choice == "All":
+            metric_pool = ["points_per_game", "goals_per_game", "assists_per_game",
+                           "shots_per_game", "ground_balls_per_game",
+                           "caused_turnovers_per_game", "touches_per_game",
+                           "faceoff_pct_calc", "save_pct_calc", "saves_per_game"]
+        else:
+            role_key = next(r for r in roles.ROLE_ORDER
+                            if roles.role_label(r) == role_choice)
+            metric_pool = list(roles.ROLE_HEADLINE_METRICS.get(role_key, []))
+            key_players = key_players[key_players["role_group"] == role_key]
 
-    with kp2:
-        st.markdown(f"#### {home_name} Key Players")
-        safe_bar_chart(
-            home_players.sort_values(player_form_metric),
-            x_col="full_name",
-            y_col=player_form_metric,
-            color_col="position",
-            title=f"{home_name} — {pretty_col(player_form_metric)}",
-            orientation="h"
-        )
-        display_table(home_players, height=320)
+        metric = ui.metric_selectbox(
+            "Rank by", options=M.with_data(key_players, metric_pool),
+            key="matchup_player_metric", container=picker[0])
+
+        if not metric:
+            st.info("No ranking metric is available for this selection.")
+        else:
+            sides = st.columns(2)
+            for col, (name, team_id) in zip(sides, [(away_name, away_id),
+                                                    (home_name, home_id)]):
+                with col:
+                    st.markdown(f"#### {name}")
+                    side = _players_for_team(key_players, team_id)
+                    side = M.sort_df(side, metric).head(int(top_n))
+                    if len(side) == 0:
+                        st.info(f"No {source.lower()} rows for {name}.")
+                        continue
+                    ui.safe_bar_chart(
+                        side, x_col="full_name", y_col=metric, color_col="position",
+                        title=f"{name} — {M.label(metric)}", orientation="h",
+                        height=360,
+                    )
+                    show = M.existing(side, [
+                        "full_name", "position", "games", metric,
+                        "points_per_game", "goals_per_game", "assists_per_game",
+                        "shots_per_game", "shot_pct_calc", "ground_balls_per_game",
+                        "caused_turnovers_per_game", "turnovers_per_game",
+                        "touches_per_game",
+                    ])
+                    ui.display_table(side[show], height=320)
+
+# ------------------------------------------------------------
+# BOX SCORE (completed games only)
+# ------------------------------------------------------------
+
+if is_played:
+    with tabs[4]:
+        if game_id is None or pd.isna(game_id):
+            st.info("This game is marked final but carries no game ID, so its box "
+                    "score cannot be located.")
+        else:
+            team_box = _two_team_frame(
+                "SELECT * FROM clean.team_game_stats WHERE game_id = ?", [game_id])
+
+            if len(team_box) == 0:
+                st.info("No team box score rows were found for this game.")
+            else:
+                ui.section("Team box score")
+                ui.display_comparison_matrix(team_box, "team_name", [
+                    "scores", "goals", "one_point_goals", "two_point_goals",
+                    "assists", "shots", "shots_on_goal", "shot_pct",
+                    "shots_on_goal_pct", "two_point_shot_pct", "ground_balls",
+                    "turnovers", "caused_turnovers", "faceoffs_won",
+                    "faceoffs_lost", "faceoff_pct", "saves", "save_pct",
+                    "clears", "clear_attempts", "clear_pct", "ride_attempts",
+                    "times_man_up", "power_play_goals", "power_play_pct",
+                    "times_short_handed", "man_down_pct",
+                    "shot_clock_expirations", "num_penalties", "pim", "touches",
+                    "total_passes", "time_in_possession", "time_in_possession_pct",
+                    "official_total_possessions", "offensive_sequence_proxy",
+                ], height=560)
+
+                if "possession_data_status" in team_box.columns:
+                    statuses = sorted(team_box["possession_data_status"]
+                                      .dropna().astype(str).unique().tolist())
+                    if statuses:
+                        st.caption("Possession data status: " + ", ".join(statuses)
+                                   + ". Possession time is shown as M:SS.")
+
+            player_box = query_df(
+                "SELECT * FROM clean.player_game_stats WHERE game_id = ?", [game_id])
+
+            if len(player_box) == 0:
+                st.info("No player box score rows were found for this game.")
+            else:
+                ui.section("Player box score")
+                player_box = roles.add_role_column(player_box)
+
+                box_controls = st.columns(2)
+                side_name = box_controls[0].radio(
+                    "Team", options=[away_name, home_name], horizontal=True,
+                    key="matchup_box_team")
+                side_id = away_id if side_name == away_name else home_id
+
+                # Gated on roles.py, not on the hardcoded ["D","LSM","SSDM","G"]
+                # and ["FO","FOS"] sets this page used to carry.
+                role_views = {
+                    "Offense": (roles.ROLE_OFFENSE, [
+                        "full_name", "position", "points", "scoring_points",
+                        "goals", "one_point_goals", "two_point_goals", "assists",
+                        "assist_opportunities", "shots", "shots_on_goal",
+                        "shot_pct", "ground_balls", "turnovers", "touches",
+                        "total_passes"]),
+                    "Defense": (roles.ROLE_DEFENSE, [
+                        "full_name", "position", "caused_turnovers",
+                        "ground_balls", "turnovers", "num_penalties", "pim",
+                        "points", "shots", "touches", "total_passes"]),
+                    "Faceoff": (roles.ROLE_FACEOFF, [
+                        "full_name", "position", "fo_record", "faceoff_pct",
+                        "faceoffs", "faceoffs_won", "faceoffs_lost",
+                        "ground_balls", "points", "assists", "shots", "touches"]),
+                    "Goalie": (roles.ROLE_GOALIE, [
+                        "full_name", "position", "saves", "goals_against",
+                        "scores_against", "save_pct", "clean_saves",
+                        "messy_saves", "clean_save_pct", "saa", "touches",
+                        "total_passes"]),
+                }
+                view_name = box_controls[1].radio(
+                    "View", options=list(role_views), horizontal=True,
+                    key="matchup_box_view")
+                role_key, cols = role_views[view_name]
+
+                side = player_box[player_box["team_id"].astype(str) == str(side_id)]
+                side = side[side["role_group"] == role_key]
+                if len(side) == 0:
+                    st.info(f"No {view_name.lower()} players are listed for "
+                            f"{side_name} in this game.")
+                else:
+                    sort_keys = {
+                        roles.ROLE_OFFENSE: ["points", "goals", "assists"],
+                        roles.ROLE_DEFENSE: ["caused_turnovers", "ground_balls"],
+                        roles.ROLE_FACEOFF: ["faceoffs_won", "faceoffs"],
+                        roles.ROLE_GOALIE: ["saves"],
+                    }[role_key]
+                    first = next((k for k in sort_keys if k in side.columns), None)
+                    if first:
+                        side = M.sort_df(side, first)
+                    # clean_schema: clean.player_game_stats stores clean_save_pct
+                    # on a 0–1 scale where the marts store 0–100.
+                    ui.display_table(side[M.existing(side, cols)], height=420,
+                                     clean_schema=True)
+
+# ============================================================
+# WHERE TO GO
+# ============================================================
+
+st.divider()
+nav = st.columns(4)
+with nav[0]:
+    P.link_to("teams", f"{away_name} profile →", team=away_name)
+with nav[1]:
+    P.link_to("teams", f"{home_name} profile →", team=home_name)
+with nav[2]:
+    P.link_to("compare_teams", "Compare teams →")
+with nav[3]:
+    P.link_to("schedule", "Full schedule →")

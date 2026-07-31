@@ -1,398 +1,293 @@
 """
-shared/ui.py — UI helpers, formatting utilities, and display constants for PLL Analytics.
+shared/ui.py — presentation layer for PLL Analytics.
+
+What changed and why:
+
+* FORMATTING IS METRIC-AWARE. `display_table` used to format every numeric column
+  with a single `nice_num`, so Shot % rendered as "0.28" instead of "28.3%" and
+  Possession Time showed a raw second count. Formatting now comes from
+  shared.metrics, per column.
+
+* CHARTS NO LONGER LIE ABOUT PRECISION. `standardize_chart` forced
+  `tickformat=".2f"` on every y-axis (goal counts became "12.00") and
+  `safe_bar_chart` forced `texttemplate="%{text:.2f}"` on every bar label. Both
+  now ask the registry for the right format. `standardize_chart` also called
+  `fig.update_traces(hovertemplate=None)`, which stripped hover labels; hover is
+  now formatted rather than removed.
+
+* CSS IS THEME-SAFE. SHARED_CSS hardcoded light-on-dark colours (#f8fafc text on
+  translucent slate). With no [theme] block in config.toml the app inherited the
+  viewer's browser preference, so light-mode users got white text on a white
+  card. Colours are now derived from Streamlit's own theme variables, and
+  config.toml pins a base theme. This also removes the need for page 07 to inject
+  its own conflicting light-theme scoreboard CSS.
+
+* LABELS COME FROM ONE PLACE. The ~250-entry COL_LABELS dict is gone; labels are
+  in shared.metrics alongside each metric's unit, direction and definition.
+  `pretty_col` is kept as a thin alias because it is referenced widely.
 """
+
+from __future__ import annotations
+
+from html import escape
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 import plotly.express as px
-from html import escape
+import streamlit as st
+
+from shared import metrics as M
 
 # ============================================================
 # CSS
 # ============================================================
+#
+# Colours are neutral greys at low alpha rather than fixed light/dark values, so
+# a card reads correctly on either theme: borders and fills tint whatever is
+# behind them, and body text simply inherits Streamlit's own text colour.
+#
+# Deliberately NOT using color-mix() against var(--text-color): an unsupported
+# color-mix() inside a custom property is stored as-is and only becomes invalid
+# when used, which drops the whole declaration instead of falling back. Grey at
+# alpha has no such failure mode.
 
 SHARED_CSS = """
 <style>
+    :root {
+        --pll-muted: #6b7280;                    /* legible on light and dark */
+        --pll-border: rgba(128, 128, 128, 0.28);
+        --pll-surface: rgba(128, 128, 128, 0.07);
+        --pll-surface-strong: rgba(128, 128, 128, 0.12);
+        --pll-accent: rgba(59, 130, 246, 0.75);
+        --pll-good: #16a34a;
+        --pll-bad: #dc2626;
+    }
+
     .main .block-container {
         padding-top: 1.15rem;
         padding-bottom: 2rem;
         max-width: 1700px;
     }
 
-    h1, h2, h3 {
-        letter-spacing: -0.03em;
+    h1, h2, h3 { letter-spacing: -0.03em; }
+
+    .page-title {
+        font-size: 1.85rem;
+        font-weight: 800;
+        letter-spacing: -0.035em;
+        margin-bottom: 0.1rem;
     }
 
-    .section-note {
-        color: #94a3b8;
+    .section-note, .page-subtitle {
+        color: var(--pll-muted);
         font-size: 0.92rem;
-        margin-top: -0.35rem;
-        margin-bottom: 0.6rem;
+        margin-top: -0.2rem;
+        margin-bottom: 0.75rem;
     }
 
     .stat-card {
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 16px;
-        padding: 14px 16px;
-        background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015));
-        box-shadow: 0 8px 20px rgba(0,0,0,0.11);
-        min-height: 92px;
+        border: 1px solid var(--pll-border);
+        border-radius: 14px;
+        padding: 12px 15px;
+        background: var(--pll-surface);
+        min-height: 88px;
         margin-bottom: 10px;
     }
 
     .stat-label {
-        color: #94a3b8;
-        font-size: 0.82rem;
+        color: var(--pll-muted);
+        font-size: 0.78rem;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        margin-bottom: 6px;
+        margin-bottom: 5px;
     }
 
     .stat-value {
-        font-size: 1.58rem;
+        font-size: 1.5rem;
         font-weight: 800;
         line-height: 1.15;
-        color: #f8fafc;
     }
 
-    .stat-sub {
-        color: #cbd5e1;
-        font-size: 0.80rem;
-        margin-top: 4px;
-    }
+    .stat-sub { color: var(--pll-muted); font-size: 0.79rem; margin-top: 3px; }
+    .stat-sub.good { color: var(--pll-good); font-weight: 600; }
+    .stat-sub.bad  { color: var(--pll-bad);  font-weight: 600; }
 
     .profile-card {
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 18px;
-        padding: 18px 20px;
-        background: linear-gradient(135deg, rgba(30,41,59,0.88), rgba(15,23,42,0.75));
-        box-shadow: 0 10px 28px rgba(0,0,0,0.18);
+        border: 1px solid var(--pll-border);
+        border-radius: 16px;
+        padding: 16px 20px;
+        background: var(--pll-surface-strong);
         margin-bottom: 14px;
     }
 
-    .profile-title {
-        font-size: 1.55rem;
-        font-weight: 800;
-        margin-bottom: 4px;
-    }
-
-    .profile-subtitle {
-        color: #cbd5e1;
-        font-size: 0.95rem;
-    }
+    .profile-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 3px; }
+    .profile-subtitle { color: var(--pll-muted); font-size: 0.95rem; }
 
     .mini-card {
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 16px;
-        padding: 14px 16px;
-        background: rgba(15, 23, 42, 0.54);
-        box-shadow: 0 8px 18px rgba(0,0,0,0.12);
+        border: 1px solid var(--pll-border);
+        border-radius: 14px;
+        padding: 13px 15px;
+        background: var(--pll-surface);
         margin-bottom: 10px;
-        min-height: 126px;
+        min-height: 120px;
     }
 
-    .mini-title {
-        font-size: 1.04rem;
-        font-weight: 800;
-        color: #f8fafc;
-        margin-bottom: 8px;
-    }
-
-    .mini-line {
-        color: #cbd5e1;
-        font-size: 0.84rem;
-        line-height: 1.45;
-    }
-
-    .mini-label {
-        color: #94a3b8;
-        font-weight: 700;
-    }
+    .mini-title { font-size: 1.02rem; font-weight: 800; margin-bottom: 7px; }
+    .mini-line { font-size: 0.85rem; line-height: 1.5; }
+    .mini-label { color: var(--pll-muted); font-weight: 700; }
 
     .note-box {
-        border: 1px solid rgba(148, 163, 184, 0.22);
+        border: 1px solid var(--pll-border);
+        border-left: 3px solid var(--pll-accent);
+        border-radius: 12px;
+        padding: 13px 16px;
+        background: var(--pll-surface);
+        margin-bottom: 13px;
+    }
+
+    .note-title { font-size: 1.0rem; font-weight: 800; margin-bottom: 5px; }
+
+    /* Home-page routing card. Fixed height so the links below a row of cards
+       line up instead of stepping down with each blurb's length. */
+    .nav-card {
+        border: 1px solid var(--pll-border);
+        border-radius: 14px;
+        padding: 13px 15px 11px 15px;
+        background: var(--pll-surface);
+        margin-bottom: 8px;
+        min-height: 118px;
+    }
+
+    .nav-question { font-size: 0.98rem; font-weight: 800; margin-bottom: 6px; }
+
+    /* Scoreboard — replaces the light-theme CSS page 07 used to inject inline */
+    .scoreboard {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        border: 1px solid var(--pll-border);
         border-radius: 16px;
-        padding: 16px 18px;
-        background: rgba(15, 23, 42, 0.52);
+        padding: 16px 22px;
+        background: var(--pll-surface-strong);
         margin-bottom: 14px;
     }
 
-    .note-title {
-        font-size: 1.04rem;
-        font-weight: 800;
-        color: #f8fafc;
-        margin-bottom: 6px;
+    .scoreboard-team { flex: 1; }
+    .scoreboard-team.away { text-align: left; }
+    .scoreboard-team.home { text-align: right; }
+    .scoreboard-name { font-size: 1.12rem; font-weight: 800; }
+    .scoreboard-record { color: var(--pll-muted); font-size: 0.82rem; }
+    .scoreboard-score { font-size: 2.3rem; font-weight: 800; line-height: 1; }
+    .scoreboard-meta {
+        text-align: center;
+        color: var(--pll-muted);
+        font-size: 0.83rem;
+        min-width: 130px;
     }
 
-    div[data-testid="stDataFrame"] {
-        border-radius: 14px;
-    }
+    div[data-testid="stDataFrame"] { border-radius: 12px; }
+    div[data-testid="stMetricValue"] { font-size: 1.45rem; }
 </style>
 """
 
 
-def apply_css():
+def apply_css() -> None:
     st.markdown(SHARED_CSS, unsafe_allow_html=True)
 
 
 # ============================================================
-# DISPLAY LABELS
+# LABELS AND FORMATTING (delegated to shared.metrics)
 # ============================================================
 
-COL_LABELS = {
-    "row_type": "Row",
-    "game_label": "Game",
-    "season": "Season",
-    "game_number": "Game #",
-    "game_date_utc": "Date",
-    "game_date_guess": "Date",
-    "team_name": "Team",
-    "team_names": "Teams",
-    "teams": "Teams",
-    "opponent_team_name": "Opponent",
-    "opponents": "Opponents",
-    "is_home": "Home/Away",
-    "full_name": "Player",
-    "position": "Pos",
-    "position_name": "Position",
-    "games": "Games",
-    "seasons": "Seasons",
-    "wins": "Wins",
-    "losses": "Losses",
-    "win_pct": "Win %",
-    "points": "Points",
-    "scoring_points": "Scoring Pts",
-    "scores": "Scores",
-    "scores_against": "Scores Against",
-    "goals": "Goals",
-    "one_point_goals": "1PT Goals",
-    "two_point_goals": "2PT Goals",
-    "assists": "Assists",
-    "shots": "Shots",
-    "shots_on_goal": "SOG",
-    "two_point_shots": "2PT Shots",
-    "two_point_shots_on_goal": "2PT SOG",
-    "ground_balls": "GB",
-    "turnovers": "TO",
-    "caused_turnovers": "CT",
-    "saves": "Saves",
-    "clean_saves": "Clean Saves",
-    "messy_saves": "Messy Saves",
-    "scores_against_average": "SAA Avg",
-    "goals_against": "Goals Against",
-    "two_point_goals_against": "2PT Goals Against",
-    "saa": "Scores Against Avg",
-    "faceoffs": "FO",
-    "faceoffs_won": "FO Won",
-    "faceoffs_lost": "FO Lost",
-    "faceoff_pct": "FO %",
-    "faceoff_pct_calc": "FO %",
-    "save_pct": "Save %",
-    "save_pct_calc": "Save %",
-    "shot_pct": "Shot %",
-    "shot_pct_calc": "Shot %",
-    "shots_on_goal_rate": "SOG Rate",
-    "shots_on_goal_rate_calc": "SOG Rate",
-    "clear_pct": "Clear %",
-    "clear_pct_calc": "Clear %",
-    "clears": "Clears",
-    "clear_attempts": "Clear Att",
-    "num_penalties": "Penalties",
-    "pim": "PIM",
-    "touches": "Touches",
-    "total_passes": "Passes",
-    "time_in_possession": "Possession Time",
-    "official_total_possessions": "Official Possessions",
-    "offensive_sequence_proxy": "Offensive Sequences",
-    "points_per_game": "Points/G",
-    "scoring_points_per_game": "Scoring Pts/G",
-    "scores_per_game": "Scores/G",
-    "goals_per_game": "Goals/G",
-    "one_point_goals_per_game": "1PT Goals/G",
-    "two_point_goals_per_game": "2PT Goals/G",
-    "assists_per_game": "Assists/G",
-    "shots_per_game": "Shots/G",
-    "shots_on_goal_per_game": "SOG/G",
-    "ground_balls_per_game": "GB/G",
-    "turnovers_per_game": "TO/G",
-    "caused_turnovers_per_game": "CT/G",
-    "saves_per_game": "Saves/G",
-    "scores_against_per_game": "Scores Against/G",
-    "saa_per_game": "Scores Against Avg/G",
-    "faceoffs_per_game": "FO/G",
-    "faceoffs_won_per_game": "FO Won/G",
-    "faceoffs_lost_per_game": "FO Lost/G",
-    "touches_per_game": "Touches/G",
-    "total_passes_per_game": "Passes/G",
-    "time_in_possession_per_game": "Possession Time/G",
-    "official_total_possessions_per_game": "Official Possessions/G",
-    "offensive_sequence_proxy_per_game": "Offensive Sequences/G",
-    "team_scores": "Scores For",
-    "team_scores_per_game": "Scores For/G",
-    "scores_allowed": "Scores Allowed",
-    "scores_allowed_per_game": "Scores Allowed/G",
-    "goals_allowed": "Goals Allowed",
-    "goals_allowed_per_game": "Goals Allowed/G",
-    "one_point_goals_allowed": "1PT Goals Allowed",
-    "two_point_goals_allowed": "2PT Goals Allowed",
-    "assists_allowed": "Assists Allowed",
-    "opponent_shots": "Opponent Shots",
-    "opponent_shots_per_game": "Opponent Shots/G",
-    "opponent_shots_on_goal": "Opponent SOG",
-    "opponent_shots_on_goal_per_game": "Opponent SOG/G",
-    "opponent_goal_pct": "Opponent Goal %",
-    "opponent_sog_rate": "Opponent SOG %",
-    "opponent_sog_goal_pct": "Opponent Goals/SOG",
-    "opponent_turnovers": "Opponent TO",
-    "opponent_turnovers_per_game": "Opponent TO/G",
-    "opponent_touches": "Opponent Touches",
-    "opponent_touches_per_game": "Opponent Touches/G",
-    "opponent_total_passes": "Opponent Passes",
-    "opponent_total_passes_per_game": "Opponent Passes/G",
-    "caused_turnovers_for": "CT",
-    "caused_turnovers_for_per_game": "CT/G",
-    "saves_for": "Saves",
-    "saves_for_per_game": "Saves/G",
-    "save_pct_proxy": "Save % Proxy",
-    "ct_per_opponent_turnover": "CT/Opp TO",
-    "opponent_scores_per_offensive_sequence_proxy": "Scores Allowed/Seq",
-    "team_time_in_possession": "Possession Time",
-    "team_time_in_possession_per_game": "Possession Time/G",
-    "opponent_time_in_possession": "Opp Possession Time",
-    "opponent_time_in_possession_per_game": "Opp Possession Time/G",
-    "time_in_possession_display": "Possession Time",
-    "time_in_possession_pct_display": "Possession %",
-    "time_in_possession_available_game": "TOP Available",
-    "possession_data_status": "Possession Data Status",
-    "possession_data_note": "Possession Data Note",
-    "passes_per_touch": "Passes/Touch",
-    "seconds_possession_per_touch": "Seconds/Touch",
-    "touches_per_offensive_sequence_proxy": "Touches/Sequence",
-    "passes_per_offensive_sequence_proxy": "Passes/Sequence",
-    "team_score": "Team Score",
-    "opponent_score": "Opponent Score",
-    "team_a": "Team",
-    "team_b": "Opponent",
-    "team_a_score": "Team Score",
-    "team_b_score": "Opponent Score",
-    "team_a_shots": "Team Shots",
-    "team_b_shots": "Opponent Shots",
-    "team_a_turnovers": "Team TO",
-    "team_b_turnovers": "Opponent TO",
-    "team_a_ground_balls": "Team GB",
-    "team_b_ground_balls": "Opponent GB",
-    "team_a_caused_turnovers": "Team CT",
-    "team_b_caused_turnovers": "Opponent CT",
-    "team_a_possession": "Team Possession",
-    "team_b_possession": "Opponent Possession",
-    "time_in_possession_pct": "Possession %",
-    "event_status_label": "Raw Status",
-    "status_display": "Status",
-    "away_team_name": "Away",
-    "home_team_name": "Home",
-    "away_score": "Away Score",
-    "home_score": "Home Score",
-    "slug": "Slug",
-    "event_id": "Event",
-    "check_name": "Check",
-    "status": "Status",
-    "actual": "Actual",
-    "expected": "Expected",
-    "notes": "Notes",
-    "split_type": "Split",
-    "stat_type": "Type",
-    "definition": "Definition",
-    "source_notes": "Source / Notes",
-    # UI Polish additions
-    "time_in_possession_per_game_mmss": "Possession Time/G",
-    "faceoff_pct_for_ranking": "Faceoff Win %",
-    "shot_pct_calc": "Shot %",
-    "shots_on_goal_rate_calc": "Shots on Goal Rate",
-    "faceoff_pct_calc": "Faceoff Win %",
-    "save_pct_display": "Save Percentage",
-    "save_pct_display_pct": "Save %",
-    "save_pct_for_ranking": "Save Percentage",
-    "shots_faced_calc": "Shots Faced",
-    "shots_faced_per_game_calc": "Shots Faced/G",
-    "def_scores_allowed_per_game": "Scores Allowed/G",
-    "def_goals_allowed_per_game": "Goals Allowed/G",
-    "def_opponent_shots_per_game": "Opp Shots/G",
-    "def_opponent_goal_pct": "Opp Goal %",
-    "def_save_pct_proxy": "Save % Proxy",
-    "score_margin_per_game": "Score Margin/G",
-    "overall_rank": "Overall Rank",
-    "view_rank": "View Rank",
-    "overall_score": "Overall Score",
-    "overall_percentile": "Overall Percentile",
-    "position_rank": "Position Rank",
-    "position_percentile": "Position Percentile",
-    "role_group": "Role",
-    "base_impact_score": "Base Impact",
-    "role_primary_score": "Role Score",
-    "role_primary_percentile": "Role Percentile",
-    "role_context_value_score": "Role Context Value",
-    "role_context_rank": "Role Rank",
-    "role_context_percentile": "Role Context Percentile",
-    "role_separation_score": "Peer Separation Score",
-    "role_adjusted_z": "Peer Separation Z",
-    "role_robust_z": "Raw Peer Separation Z",
-    "role_value_tier": "Role Tier",
-    "role_group_size": "Peer Group Size",
-    "role_reliability": "Peer Group Reliability",
-    "goal_value_score": "Scoring Value",
-    "scoring_value_score": "Scoring Value",
-    "playmaking_value_score": "Playmaking Value",
-    "one_point_goal_score": "1PT Goal Value",
-    "two_point_goal_score": "2PT Goal Value",
-    "scoring_points_score": "Scoring Points Value",
-    "ground_ball_score": "Ground Ball Value",
-    "usage_score": "Usage Value",
-    "team_style_overall_score": "Overall Style Score",
-    "offensive_volume_score": "Offensive Volume",
-    "offensive_efficiency_score": "Offensive Efficiency",
-    "ball_movement_score": "Ball Movement",
-    "possession_control_score": "Possession Control",
-    "defensive_suppression_score": "Defensive Suppression",
-    "pace_tempo_score": "Pace / Tempo",
-    "net_scores_per_game": "Net Scores/G",
-    "ranking_context": "Context",
-    "ranking_context_type": "Context Type",
-    "ranking_context_max_games": "Max GP",
-    "min_games_default": "Default Min GP",
-    "eligible_for_default_ranking": "Eligible",
-    "sample_size_note": "Sample Note",
-    "profile_context": "Context",
-    "profile_context_type": "Context Type",
-    "profile_rank": "Style Rank",
-    "profile_percentile": "Style %ile",
-    "pace_label": "Pace",
-    "offensive_profile_label": "Off Profile",
-    "defensive_profile_label": "Def Profile",
-    "possession_profile_label": "Poss Profile",
-    "style_summary": "Style Summary",
-    "points_per_touch": "Pts/Touch",
-    "goals_per_shot": "Goals/Shot",
-    # Phase 2 new derived metrics
-    "assist_conv_rate": "Assist Conv %",
-    "assist_opp_per_game": "Assist Opp/G",
-    "assist_opportunities": "Assist Opp",
-    "two_pt_conversion": "2PT Conv %",
-    "clean_save_rate": "Clean Save %",
-    "clean_save_pct": "Clean Save%",
-    "clean_save_rate_score": "Clean Save Score",
-    "assist_conv_score": "Assist Conv Score",
-    "two_pt_conv_score": "2PT Conv Score",
-    # Phase 2 RPS component scores
-    "offense_rps": "Offense Score",
-    "defense_rps": "Defense Score",
-    "faceoff_rps": "Faceoff Score",
-    "goalie_rps": "Goalie Score",
-    "peer_standing_score": "Peer Standing",
-    "cross_role_impact": "Cross-Role Impact",
-    "pss": "Peer Standing",
-}
+def pretty_col(col) -> str:
+    """Display label for a column. Kept as the app-wide label entry point."""
+    return M.label(str(col))
+
+
+def fmt_value(x, digits=2, pct=False) -> str:
+    """
+    Format a bare number with no column context.
+
+    Prefer `fmt_metric(key, value)` — it knows the unit. This exists for values
+    that genuinely have no metric key (counts of rows, ad-hoc arithmetic).
+    """
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    try:
+        if pd.isna(x):
+            return "—"
+    except (TypeError, ValueError):
+        pass
+    try:
+        value = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if not np.isfinite(value):
+        return "—"
+    if pct:
+        return f"{value * 100:.1f}%"
+    if abs(value - round(value)) < 1e-9:
+        return f"{int(round(value)):,}"
+    return f"{value:,.{digits}f}"
+
+
+def fmt_metric(key: str, value) -> str:
+    """Format `value` using the registered unit for `key`."""
+    return M.format_value(key, value)
+
+
+def nice_num(x) -> str:
+    if x is None:
+        return ""
+    try:
+        if pd.isna(x):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if not np.isfinite(v):
+        return ""
+    if abs(v - round(v)) < 1e-9:
+        return f"{int(round(v)):,}"
+    return f"{v:,.2f}"
+
+
+# Time formatting — one implementation. Page 07 used to carry its own copy of
+# mmss_from_seconds and format_pct_safe.
+def mmss_from_seconds(x) -> str:
+    return M.format_seconds(x, total=False)
+
+
+def format_seconds_for_table(x, total: bool = False) -> str:
+    return M.format_seconds(x, total=total, dash="")
+
+
+def format_pct_safe(x) -> str:
+    return M.format_as(M.UNIT_PCT01, x)
+
+
+def _pll_seconds_to_mmss(value) -> str:
+    return M.format_seconds(value, total=False)
+
+
+def _pll_pct_text(value, digits: int = 1) -> str:
+    if value is None:
+        return "—"
+    try:
+        if pd.isna(value):
+            return "—"
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not np.isfinite(v):
+        return "—"
+    return f"{v * 100:.{digits}f}%"
 
 
 DEFAULT_HIDE_COLS = {
@@ -402,142 +297,111 @@ DEFAULT_HIDE_COLS = {
     "opponent_team_id_raw", "opponent_team_name_raw", "away_team_id_raw", "home_team_id_raw",
     "winner_team_id_raw", "loser_team_id_raw", "winner_team_id", "loser_team_id",
     "event_summary_path", "team_game_stats_path", "player_game_stats_path",
-    "discovery_source", "source", "source_name", "raw_path"
+    "discovery_source", "source", "source_name", "raw_path",
+    "profile_sort_order", "profile_context_sort", "ranking_sort_order",
+    "ranking_context_sort", "games_played_source",
 }
 
 
 # ============================================================
-# FORMATTING HELPERS
+# HEADINGS AND CARDS
 # ============================================================
 
-def pretty_col(col):
-    return COL_LABELS.get(col, str(col).replace("_", " ").title())
+def page_heading(title: str, subtitle: str = "") -> None:
+    st.markdown(f'<div class="page-title">{escape(str(title))}</div>',
+                unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="page-subtitle">{escape(str(subtitle))}</div>',
+                    unsafe_allow_html=True)
 
 
-def fmt_value(x, digits=2, pct=False):
-    if x is None or pd.isna(x):
-        return "—"
-    try:
-        value = float(x)
-    except Exception:
-        return str(x)
-    if pct:
-        return f"{value:.2%}"
-    if abs(value - round(value)) < 1e-9:
-        return f"{int(round(value)):,}"
-    return f"{value:,.{digits}f}"
+def section(title: str, note: str = "") -> None:
+    """Section heading with an optional explanatory line."""
+    st.markdown(f"#### {title}")
+    if note:
+        st.markdown(f'<div class="section-note">{escape(str(note))}</div>',
+                    unsafe_allow_html=True)
 
 
-def nice_num(x):
-    if x is None or pd.isna(x):
-        return ""
-    try:
-        v = float(x)
-    except Exception:
-        return x
-    if abs(v - round(v)) < 1e-9:
-        return f"{int(round(v)):,}"
-    return f"{v:,.2f}"
-
-
-def format_seconds_for_table(x, total=False):
-    if x is None or pd.isna(x):
-        return ""
-    try:
-        x = int(round(float(x)))
-    except Exception:
-        return x
-    sign = "-" if x < 0 else ""
-    x = abs(x)
-    h = x // 3600
-    m = (x % 3600) // 60
-    s = x % 60
-    if total and h > 0:
-        return f"{sign}{h}:{m:02d}:{s:02d}"
-    return f"{sign}{m}:{s:02d}"
-
-
-def mmss_from_seconds(x):
-    if x is None or pd.isna(x):
-        return "—"
-    try:
-        seconds = int(round(float(x)))
-    except Exception:
-        return "—"
-    sign = "-" if seconds < 0 else ""
-    seconds = abs(seconds)
-    minutes = seconds // 60
-    secs = seconds % 60
-    return f"{sign}{minutes}:{secs:02d}"
-
-
-def format_pct_safe(x):
-    if x is None or pd.isna(x):
-        return "—"
-    try:
-        return f"{float(x):.2%}"
-    except Exception:
-        return str(x)
-
-
-def _pll_seconds_to_mmss(value):
-    if value is None or pd.isna(value):
-        return "—"
-    try:
-        seconds = int(round(float(value)))
-    except Exception:
-        return "—"
-    if seconds < 0:
-        return "—"
-    return f"{seconds // 60}:{seconds % 60:02d}"
-
-
-def _pll_pct_text(value, digits=1):
-    if value is None or pd.isna(value):
-        return "—"
-    try:
-        v = float(value)
-    except Exception:
-        return "—"
-    if not np.isfinite(v):
-        return "—"
-    return f"{v * 100:.{digits}f}%"
-
-
-# ============================================================
-# UI COMPONENTS
-# ============================================================
-
-def stat_card(label, value, sub=None):
-    label = escape(str(label))
-    value = escape(str(value))
-    sub_html = f'<div class="stat-sub">{escape(str(sub))}</div>' if sub else ""
+def stat_card(label: str, value: str, sub: str | None = None,
+              tone: str | None = None) -> None:
+    """
+    A single KPI card. `tone` of "good"/"bad" colours the sub-line — used for
+    trend deltas and rank context.
+    """
+    sub_html = ""
+    if sub:
+        cls = f"stat-sub {tone}" if tone in {"good", "bad"} else "stat-sub"
+        sub_html = f'<div class="{cls}">{escape(str(sub))}</div>'
     st.markdown(
         f"""
         <div class="stat-card">
-            <div class="stat-label">{label}</div>
-            <div class="stat-value">{value}</div>
+            <div class="stat-label">{escape(str(label))}</div>
+            <div class="stat-value">{escape(str(value))}</div>
             {sub_html}
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
-def stat_grid(row, specs, columns=4):
+def metric_card(row, key: str, label: str | None = None,
+                sub: str | None = None, tone: str | None = None) -> None:
+    """Stat card for a metric key — label, value and formatting from the registry."""
+    value = row.get(key, np.nan) if hasattr(row, "get") else np.nan
+    stat_card(label or M.label(key), M.format_value(key, value), sub=sub, tone=tone)
+
+
+def metric_grid(row, keys: Sequence[str], columns: int = 4,
+                context: pd.DataFrame | None = None,
+                row_index=None, skip_missing: bool = True) -> None:
+    """
+    Grid of metric cards driven by the registry.
+
+    Replaces `stat_grid`'s (label, key, digits, pct) tuples, where the digits and
+    pct flags were set per call site and disagreed between pages. When `context`
+    is supplied each card also shows the value's rank within it.
+
+    `skip_missing` drops keys the row has no value for, so a caller can pass a
+    generous candidate list — the season and career marts do not carry identical
+    columns — without printing a row of dashes for the ones that are absent.
+    """
+    keys = [k for k in keys if k]
+    if row is None or not keys:
+        return
+    if skip_missing and hasattr(row, "index"):
+        present = set(row.index)
+        keys = [k for k in keys if k in present and pd.notna(row.get(k))]
+        if not keys:
+            return
+    cols = st.columns(columns)
+    for i, key in enumerate(keys):
+        sub = None
+        if context is not None and row_index is not None:
+            from shared import analysis  # local import avoids a circular import
+            sub = analysis.rank_text(context, key, row_index) or None
+        with cols[i % columns]:
+            metric_card(row, key, sub=sub)
+
+
+def stat_grid(row, specs, columns: int = 4) -> None:
+    """
+    Legacy grid taking (label, key[, digits[, pct]]) tuples.
+
+    Formatting now comes from the registry; the digits/pct entries are ignored so
+    a percentage can't be rendered as a raw decimal by an out-of-date call site.
+    """
     if row is None or len(specs) == 0:
         return
     cols = st.columns(columns)
     for i, spec in enumerate(specs):
         label, key = spec[0], spec[1]
-        digits = spec[2] if len(spec) > 2 else 2
-        pct = spec[3] if len(spec) > 3 else False
         value = row.get(key, np.nan) if hasattr(row, "get") else np.nan
         with cols[i % columns]:
-            stat_card(label, fmt_value(value, digits=digits, pct=pct))
+            stat_card(label, M.format_value(key, value))
 
 
-def profile_header(title, subtitle):
+def profile_header(title: str, subtitle: str) -> None:
     st.markdown(
         f"""
         <div class="profile-card">
@@ -545,23 +409,43 @@ def profile_header(title, subtitle):
             <div class="profile-subtitle">{escape(str(subtitle))}</div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
-def note_box(title, body):
+def note_box(title: str, body: str) -> None:
     st.markdown(
         f"""
         <div class="note-box">
-            <div class="mini-title">{escape(str(title))}</div>
-            <div class="mini-line">{body}</div>
+            <div class="note-title">{escape(str(title))}</div>
+            <div class="mini-line">{escape(str(body))}</div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
-def profile_summary_cards(df, title_col, specs, columns=3):
+def _pll_page_note(title: str, body: str) -> None:
+    note_box(title, body)
+
+
+def nav_card(question: str, body: str) -> None:
+    """Routing card for the home page: the question, then what the page does."""
+    st.markdown(
+        f'<div class="nav-card">'
+        f'<div class="nav-question">{escape(str(question))}</div>'
+        f'<div class="mini-line">{escape(str(body))}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def profile_summary_cards(df: pd.DataFrame, title_col: str,
+                          specs: Sequence, columns: int = 3) -> None:
+    """
+    One mini-card per row. `specs` entries are (label, key) — any third element
+    is ignored, since the registry decides formatting.
+    """
     if df is None or len(df) == 0:
         return
     n_cols = max(1, min(columns, len(df)))
@@ -571,31 +455,40 @@ def profile_summary_cards(df, title_col, specs, columns=3):
         lines = []
         for spec in specs:
             label, key = spec[0], spec[1]
-            pct = spec[2] if len(spec) > 2 else False
-            raw = row.get(key, np.nan)
-            if isinstance(raw, (int, float, np.integer, np.floating)) or pd.api.types.is_number(raw):
-                val = fmt_value(raw, pct=pct)
-            else:
-                val = "—" if raw is None or pd.isna(raw) else str(raw)
+            value = M.format_value(key, row.get(key, np.nan))
             lines.append(
-                f'<div class="mini-line"><span class="mini-label">{escape(str(label))}:</span> {escape(str(val))}</div>'
+                f'<div class="mini-line"><span class="mini-label">'
+                f'{escape(str(label))}:</span> {escape(value)}</div>'
             )
-        html = f"""
-        <div class="mini-card">
-            <div class="mini-title">{title}</div>
-            {''.join(lines)}
-        </div>
-        """
         with cols[i % n_cols]:
-            st.markdown(html, unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="mini-card"><div class="mini-title">{title}</div>'
+                f'{"".join(lines)}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def definition_caption(keys: Iterable[str]) -> None:
+    """
+    Expander listing what each metric on screen means. Definitions live with the
+    metrics, so a table can explain itself instead of relying on the Data Guide.
+    """
+    keys = [k for k in keys if M.definition(k)]
+    if not keys:
+        return
+    with st.expander("What do these metrics mean?", expanded=False):
+        for key in keys:
+            st.markdown(f"**{M.label(key)}** — {M.definition(key)}  \n"
+                        f"<span class='section-note'>{M.direction_note(key)}</span>",
+                        unsafe_allow_html=True)
 
 
 # ============================================================
-# TABLE DISPLAY
+# TABLES
 # ============================================================
 
-def make_unique_columns(cols):
-    seen = {}
+def make_unique_columns(cols: Iterable[str]) -> list[str]:
+    seen: dict[str, int] = {}
     output = []
     for col in cols:
         base = str(col)
@@ -608,256 +501,458 @@ def make_unique_columns(cols):
     return output
 
 
-def prepare_display_df(df, hide_cols=None, date_cols=None, max_cols=None):
+def prepare_display_df(df: pd.DataFrame, hide_cols=None, date_cols=None,
+                       max_cols: int | None = None,
+                       clean_schema: bool = False) -> tuple[pd.DataFrame, dict]:
+    """
+    Return (display_df, formatter_map).
+
+    Column keys are resolved to labels only at the very end, and the formatter
+    map is keyed by the FINAL label so the Styler can format by metric. Time
+    columns are pre-rendered to text because M:SS isn't a number.
+
+    Pass `clean_schema=True` when the rows come straight from the `clean` schema:
+    `clean_save_pct` is stored 0–1 there and 0–100 in every mart, so the same
+    column needs a different formatter depending on where it was read from.
+    """
     if df is None:
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
+
     out = df.copy().reset_index(drop=True)
     out = out.loc[:, ~out.columns.duplicated()].copy()
+
     hide = set(DEFAULT_HIDE_COLS)
     if hide_cols:
         hide.update(hide_cols)
-    keep_cols = [c for c in out.columns if c not in hide]
-    out = out[keep_cols]
+    out = out[[c for c in out.columns if c not in hide]]
+
     if max_cols is not None and len(out.columns) > max_cols:
         out = out.iloc[:, :max_cols]
+
     if date_cols is None:
-        date_cols = [c for c in out.columns if "date" in c.lower()]
+        date_cols = [c for c in out.columns if "date" in str(c).lower()]
     for c in date_cols:
         if c in out.columns:
             out[c] = pd.to_datetime(out[c], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # Pre-render units the Styler can't express numerically.
     for c in list(out.columns):
-        c_lower = str(c).lower()
-        if c_lower in {"time_in_possession", "team_time_in_possession", "opponent_time_in_possession"}:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda v: format_seconds_for_table(v, total=True))
-        elif "time_in_possession_per_game" in c_lower:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda v: format_seconds_for_table(v, total=False))
+        unit = M.unit(str(c))
+        if unit in {M.UNIT_SEC, M.UNIT_SEC_TOTAL} and pd.api.types.is_numeric_dtype(out[c]):
+            total = unit == M.UNIT_SEC_TOTAL
+            out[c] = out[c].apply(lambda v, t=total: M.format_seconds(v, total=t, dash=""))
+
     for c in out.columns:
-        if str(c).lower() == "season":
-            numeric_season = pd.to_numeric(out[c], errors="coerce")
-            out[c] = numeric_season.astype("Int64").astype(str)
-            out[c] = out[c].replace("<NA>", "")
-    for c in out.columns:
-        if str(c).lower() == "is_home":
+        name = str(c).lower()
+        if name == "season":
+            out[c] = (pd.to_numeric(out[c], errors="coerce")
+                      .astype("Int64").astype(str).replace("<NA>", ""))
+        elif name == "is_home":
             out[c] = out[c].map({1: "Home", 0: "Away", True: "Home", False: "Away"}).fillna(out[c])
-    out.columns = make_unique_columns([pretty_col(c) for c in out.columns])
+
+    # Build the formatter map keyed by final label, then rename.
+    original = list(out.columns)
+    labels = make_unique_columns([M.label(str(c)) for c in original])
+    fmt_map = {}
+    for src, label in zip(original, labels):
+        if pd.api.types.is_numeric_dtype(out[src]):
+            fmt_map[label] = M.formatter_for(str(src), dash="",
+                                             clean_schema=clean_schema)
+    out.columns = labels
+
     out = out.reset_index(drop=True)
     out = out.loc[:, ~out.columns.duplicated()].copy()
-    return out
+    return out, fmt_map
 
 
-def display_table(df, height=420, hide_cols=None, date_cols=None, max_cols=None):
-    out = prepare_display_df(df, hide_cols=hide_cols, date_cols=date_cols, max_cols=max_cols)
+def display_table(df: pd.DataFrame, height: int = 420, hide_cols=None,
+                  date_cols=None, max_cols: int | None = None,
+                  highlight: str | None = None, clean_schema: bool = False,
+                  empty_message: str = "No rows match the current filters.") -> None:
+    """
+    Render `df` with per-metric formatting.
+
+    `highlight` names a column to colour-scale, using the metric's direction so
+    green always means good. See prepare_display_df for `clean_schema`.
+    """
+    out, fmt_map = prepare_display_df(df, hide_cols=hide_cols, date_cols=date_cols,
+                                      max_cols=max_cols, clean_schema=clean_schema)
     if out is None or len(out) == 0:
-        st.info("No rows available for the selected filters.")
+        st.info(empty_message)
         return
-    numeric_cols = out.select_dtypes(include=[np.number]).columns.tolist()
-    fmt_map = {c: nice_num for c in numeric_cols}
+
     try:
         styler = (
             out.style
             .format(fmt_map, na_rep="")
             .set_properties(**{"text-align": "center", "vertical-align": "middle"})
             .set_table_styles([
-                {"selector": "th", "props": [("text-align", "center"), ("font-weight", "700"), ("vertical-align", "middle")]},
-                {"selector": "td", "props": [("text-align", "center"), ("vertical-align", "middle")]}
+                {"selector": "th", "props": [("text-align", "center"),
+                                             ("font-weight", "700"),
+                                             ("vertical-align", "middle")]},
+                {"selector": "td", "props": [("text-align", "center"),
+                                             ("vertical-align", "middle")]},
             ])
         )
-        st.dataframe(styler, use_container_width=True, hide_index=True, height=height)
+        if highlight:
+            label = M.label(highlight)
+            if label in out.columns and pd.api.types.is_numeric_dtype(out[label]):
+                styler = styler.background_gradient(
+                    subset=[label],
+                    cmap="RdYlGn_r" if M.is_lower_better(highlight) else "RdYlGn",
+                )
+        st.dataframe(styler, width="stretch", hide_index=True, height=height)
     except Exception:
-        st.dataframe(out, use_container_width=True, hide_index=True, height=height)
+        st.dataframe(out, width="stretch", hide_index=True, height=height)
 
 
-def comparison_matrix(df, entity_col, metrics):
+def comparison_matrix(df: pd.DataFrame, entity_col: str,
+                      metrics: Sequence[str]) -> pd.DataFrame:
+    """
+    Metrics as rows, entities as columns, values formatted per metric, plus a
+    "Best" column naming the leader — the old version left the reader to work
+    out which end of each row was good.
+    """
     if df is None or len(df) == 0:
         return pd.DataFrame()
+
     rows = []
     for metric in metrics:
         if metric not in df.columns:
             continue
-        row = {"Metric": pretty_col(metric)}
-        for _, r in df.iterrows():
-            entity = str(r.get(entity_col, "Unknown"))
-            value = r.get(metric, np.nan)
-            row[entity] = fmt_value(value)
+        values = pd.to_numeric(df[metric], errors="coerce")
+        if values.notna().sum() == 0:
+            continue
+
+        row = {"Metric": M.label(metric)}
+        for idx, r in df.iterrows():
+            row[str(r.get(entity_col, "Unknown"))] = M.format_value(metric, r.get(metric))
+
+        if M.direction(metric) is not None:
+            best_idx = values.idxmin() if M.is_lower_better(metric) else values.idxmax()
+            if pd.notna(best_idx):
+                row["Best"] = str(df.at[best_idx, entity_col])
+        else:
+            row["Best"] = "—"
         rows.append(row)
     return pd.DataFrame(rows)
 
 
-def display_comparison_matrix(df, entity_col, metrics, height=420):
+def display_comparison_matrix(df: pd.DataFrame, entity_col: str,
+                              metrics: Sequence[str], height: int = 420) -> None:
     matrix = comparison_matrix(df, entity_col, metrics)
-    display_table(matrix, height=height)
+    if matrix is None or len(matrix) == 0:
+        st.info("No shared metrics available for the current selection.")
+        return
+    # Already formatted as strings — bypass the metric formatter.
+    st.dataframe(matrix, width="stretch", hide_index=True, height=height)
 
 
-def download_csv(df, filename, label="Download CSV"):
+def download_csv(df: pd.DataFrame, filename: str, label: str = "Download CSV") -> None:
+    if df is None or len(df) == 0:
+        return
     st.download_button(
         label=label,
         data=df.to_csv(index=False).encode("utf-8"),
         file_name=filename,
-        mime="text/csv"
+        mime="text/csv",
     )
 
 
-def add_window_summary_rows(df, label_col="row_type"):
+def add_window_summary_rows(df: pd.DataFrame, label_col: str = "row_type") -> pd.DataFrame:
+    """Append Window Total / Window Avg rows to a game-log window."""
     if df is None or len(df) == 0:
         return pd.DataFrame()
     out = df.copy().reset_index(drop=True)
     out.insert(0, label_col, [f"Game {i + 1}" for i in range(len(out))])
-    excluded_numeric = {"season", "game_number", "is_home"}
-    numeric_cols = [
-        c for c in out.select_dtypes(include=[np.number]).columns
-        if c not in excluded_numeric
-    ]
+
+    excluded = {"season", "game_number", "is_home"}
+    numeric_cols = [c for c in out.select_dtypes(include=[np.number]).columns
+                    if c not in excluded]
+
     total_row = {c: "" for c in out.columns}
     avg_row = {c: "" for c in out.columns}
     total_row[label_col] = "Window Total"
     avg_row[label_col] = "Window Avg"
     for c in numeric_cols:
-        total_row[c] = out[c].sum(skipna=True)
+        # Totals are meaningless for rates — average them instead of summing.
+        if M.is_percent(c) or str(c).endswith(("_per_game", "_pct", "_rate", M.PER_100_SUFFIX)):
+            total_row[c] = out[c].mean(skipna=True)
+        else:
+            total_row[c] = out[c].sum(skipna=True)
         avg_row[c] = out[c].mean(skipna=True)
     return pd.concat([out, pd.DataFrame([total_row, avg_row])], ignore_index=True)
 
 
 # ============================================================
-# CHART HELPERS
+# CHARTS
 # ============================================================
 
-def clean_chart_x(df, x_col):
+def clean_chart_x(df: pd.DataFrame, x_col: str) -> pd.DataFrame:
     out = df.copy()
     if x_col in out.columns and str(x_col).lower() == "season":
-        out[x_col] = pd.to_numeric(out[x_col], errors="coerce").astype("Int64").astype(str)
-        out[x_col] = out[x_col].replace("<NA>", "")
+        out[x_col] = (pd.to_numeric(out[x_col], errors="coerce")
+                      .astype("Int64").astype(str).replace("<NA>", ""))
     return out
 
 
-def standardize_chart(fig, category_x=False):
+def standardize_chart(fig, category_x: bool = False, y_key: str | None = None,
+                      height: int = 420):
+    """
+    Apply consistent layout. The y-axis format follows the metric rather than a
+    blanket ".2f", and hover is left intact (it used to be nulled outright).
+    """
     fig.update_layout(
-        height=440,
-        margin=dict(l=20, r=20, t=60, b=25),
-        hovermode="x unified"
+        height=height,
+        margin=dict(l=20, r=20, t=55, b=25),
+        hovermode="x unified" if category_x else "closest",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, title=None),
     )
-    fig.update_yaxes(tickformat=".2f")
+    if y_key:
+        tickformat = M.plotly_tickformat(y_key)
+        if tickformat:
+            fig.update_yaxes(tickformat=tickformat)
     if category_x:
         fig.update_xaxes(type="category")
-    fig.update_traces(hovertemplate=None)
     return fig
 
 
-def safe_line_chart(df, x_col, y_cols, title, color_col=None):
+def safe_line_chart(df: pd.DataFrame, x_col: str, y_cols: Sequence[str],
+                    title: str, color_col: str | None = None,
+                    height: int = 420) -> None:
     if df is None or len(df) == 0:
         st.info("No chart data available.")
         return
     if x_col not in df.columns:
         st.warning(f"Missing x-axis column: {x_col}")
         return
-    available_y_cols = [c for c in y_cols if c in df.columns]
-    if not available_y_cols:
-        st.warning("No requested y-axis columns are available.")
+
+    available = [c for c in y_cols if c in df.columns
+                 and pd.to_numeric(df[c], errors="coerce").notna().any()]
+    if not available:
+        st.info("No data available for the selected chart metrics.")
         return
-    use_cols = [x_col] + ([color_col] if color_col and color_col in df.columns else []) + available_y_cols
+
+    use_cols = [x_col] + ([color_col] if color_col and color_col in df.columns else []) + available
     chart_df = clean_chart_x(df[use_cols].copy(), x_col)
+
     fig = px.line(
-        chart_df,
-        x=x_col,
-        y=available_y_cols,
+        chart_df, x=x_col, y=available,
         color=color_col if color_col and color_col in chart_df.columns else None,
-        markers=True,
-        title=title,
-        labels={c: pretty_col(c) for c in chart_df.columns}
+        markers=True, title=title,
+        labels={c: M.label(c) for c in chart_df.columns},
     )
-    fig = standardize_chart(fig, category_x=(str(x_col).lower() == "season"))
-    st.plotly_chart(fig, use_container_width=True)
+    # Single-metric charts can format the axis; mixed-unit charts must not.
+    y_key = available[0] if len(available) == 1 else None
+    fig = standardize_chart(fig, category_x=(str(x_col).lower() == "season"),
+                            y_key=y_key, height=height)
+    st.plotly_chart(fig, width="stretch")
 
 
-def safe_bar_chart(df, x_col, y_col, title, color_col=None, orientation="v"):
+def safe_bar_chart(df: pd.DataFrame, x_col: str, y_col: str, title: str,
+                   color_col: str | None = None, orientation: str = "v",
+                   show_labels: bool = True, height: int = 420) -> None:
     if df is None or len(df) == 0:
         st.info("No chart data available.")
         return
-    required = [x_col, y_col]
-    if color_col:
-        required.append(color_col)
+
+    required = [x_col, y_col] + ([color_col] if color_col else [])
     missing = [c for c in required if c not in df.columns]
     if missing:
         st.warning(f"Missing chart columns: {missing}")
         return
+    if pd.to_numeric(df[y_col], errors="coerce").notna().sum() == 0:
+        st.info(f"No {M.label(y_col)} data available for this selection.")
+        return
+
     chart_df = clean_chart_x(df.copy(), x_col)
+    labels = {c: M.label(c) for c in chart_df.columns}
+    text_arg = y_col if show_labels else None
+
     if orientation == "h":
-        fig = px.bar(
-            chart_df, x=y_col, y=x_col, color=color_col, text=y_col,
-            title=title, orientation="h",
-            labels={c: pretty_col(c) for c in chart_df.columns}
-        )
+        fig = px.bar(chart_df, x=y_col, y=x_col, color=color_col, text=text_arg,
+                     title=title, orientation="h", labels=labels)
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
+        tickformat = M.plotly_tickformat(y_col)
+        if tickformat:
+            fig.update_xaxes(tickformat=tickformat)
+        fig = standardize_chart(fig, height=height)
     else:
-        fig = px.bar(
-            chart_df, x=x_col, y=y_col, color=color_col, text=y_col,
-            title=title,
-            labels={c: pretty_col(c) for c in chart_df.columns}
-        )
-    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
+        fig = px.bar(chart_df, x=x_col, y=y_col, color=color_col, text=text_arg,
+                     title=title, labels=labels)
+        fig = standardize_chart(fig, category_x=(str(x_col).lower() == "season"),
+                                y_key=y_col, height=height)
+
+    if show_labels:
+        fig.update_traces(texttemplate=M.plotly_texttemplate(y_col),
+                          textposition="outside", cliponaxis=False)
     if color_col == x_col:
         fig.update_layout(showlegend=False)
-    fig = standardize_chart(fig, category_x=(str(x_col).lower() == "season"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
-def safe_scatter(df, x_col, y_col, size_col=None, color_col=None, title="Scatter"):
+def safe_scatter(df: pd.DataFrame, x_col: str, y_col: str,
+                 size_col: str | None = None, color_col: str | None = None,
+                 title: str = "Scatter", hover_col: str | None = None,
+                 quadrants: bool = False, height: int = 460) -> None:
+    """
+    Scatter with optional median quadrant lines — for offense-vs-defense style
+    views where "which corner is good" is the whole point of the chart.
+    """
     if df is None or len(df) == 0:
         st.info("No chart data available.")
         return
-    required = [x_col, y_col]
-    if size_col:
-        required.append(size_col)
-    if color_col:
-        required.append(color_col)
+
+    required = [x_col, y_col] + [c for c in (size_col, color_col) if c]
     missing = [c for c in required if c not in df.columns]
     if missing:
         st.warning(f"Missing chart columns: {missing}")
         return
-    fig = px.scatter(
-        df, x=x_col, y=y_col, size=size_col, color=color_col,
-        hover_name="full_name" if "full_name" in df.columns else None,
-        title=title,
-        labels={c: pretty_col(c) for c in df.columns}
-    )
-    fig = standardize_chart(fig)
-    st.plotly_chart(fig, use_container_width=True)
+
+    plot_df = df.copy()
+    # Plotly errors on negative sizes; drop the size encoding rather than the rows.
+    if size_col:
+        sizes = pd.to_numeric(plot_df[size_col], errors="coerce")
+        if sizes.notna().sum() == 0 or (sizes.dropna() < 0).any():
+            size_col = None
+
+    hover_name = hover_col or ("full_name" if "full_name" in plot_df.columns
+                               else ("team_name" if "team_name" in plot_df.columns else None))
+
+    fig = px.scatter(plot_df, x=x_col, y=y_col, size=size_col, color=color_col,
+                     hover_name=hover_name, title=title,
+                     labels={c: M.label(c) for c in plot_df.columns})
+
+    if quadrants:
+        x_med = pd.to_numeric(plot_df[x_col], errors="coerce").median()
+        y_med = pd.to_numeric(plot_df[y_col], errors="coerce").median()
+        if pd.notna(x_med):
+            fig.add_vline(x=x_med, line_dash="dot", line_width=1, opacity=0.45)
+        if pd.notna(y_med):
+            fig.add_hline(y=y_med, line_dash="dot", line_width=1, opacity=0.45)
+
+    fig = standardize_chart(fig, y_key=y_col, height=height)
+    tickformat = M.plotly_tickformat(x_col)
+    if tickformat:
+        fig.update_xaxes(tickformat=tickformat)
+    st.plotly_chart(fig, width="stretch")
 
 
-# ============================================================
-# DATA MANIPULATION HELPERS
-# ============================================================
-
-def _pll_select_existing(df, cols):
+def metric_bar(df: pd.DataFrame, entity_col: str, metrics: Sequence[str],
+               title: str, height: int = 420) -> None:
+    """
+    Grouped bar of several 0–100 component scores for one entity.
+    Pages 13 and 14 each carried their own `_pll_metric_bar` doing this.
+    """
     if df is None or len(df) == 0:
+        st.info("No chart data available.")
+        return
+    available = [m for m in metrics if m in df.columns
+                 and pd.to_numeric(df[m], errors="coerce").notna().any()]
+    if not available:
+        st.info("No component scores available for this selection.")
+        return
+
+    long_df = df.melt(id_vars=[entity_col], value_vars=available,
+                      var_name="component", value_name="score")
+    long_df["component"] = long_df["component"].map(M.label)
+    long_df["score"] = pd.to_numeric(long_df["score"], errors="coerce")
+
+    fig = px.bar(long_df, x="score", y="component",
+                 color=entity_col if long_df[entity_col].nunique() > 1 else None,
+                 orientation="h", title=title, text="score",
+                 labels={"score": "Score", "component": "Component"},
+                 barmode="group")
+    fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
+    fig.update_xaxes(range=[0, 105], tickformat=".0f")
+    fig = standardize_chart(fig, height=height)
+    st.plotly_chart(fig, width="stretch")
+
+
+# ============================================================
+# METRIC PICKERS
+# ============================================================
+
+def metric_selectbox(label: str, options: Sequence[str], key: str,
+                     default: str | None = None, container=None,
+                     help: str | None = None) -> str | None:
+    """
+    Selectbox over metric keys with registry labels and a direction caption, so
+    the user can see whether high or low is good without consulting a legend.
+    """
+    options = [o for o in options if o]
+    if not options:
+        return None
+    target = container if container is not None else st
+    index = options.index(default) if default in options else 0
+    chosen = target.selectbox(label, options=options, index=index,
+                              format_func=M.label, key=key, help=help)
+    if chosen and M.direction(chosen):
+        caption = M.direction_note(chosen)
+        definition = M.definition(chosen)
+        target.caption(f"{caption}. {definition}" if definition else caption)
+    return chosen
+
+
+def family_metric_picker(df: pd.DataFrame, candidates: Sequence[str],
+                         key: str, label: str = "Metrics",
+                         default: Sequence[str] | None = None) -> list[str]:
+    """
+    Multiselect grouped by metric family, restricted to columns that hold data.
+    Replaces the 100-column raw dumps: the user opts in to what they want.
+    """
+    available = M.with_data(df, candidates)
+    if not available:
         return []
-    return [c for c in cols if c in df.columns]
+    grouped = M.by_family(available)
+    ordered = [k for fam in grouped.values() for k in fam]
+    default_keys = [d for d in (default or ordered[:8]) if d in available]
+
+    def fmt(k: str) -> str:
+        return f"{M.FAMILY_LABELS.get(M.family(k), 'Other')} · {M.label(k)}"
+
+    return st.multiselect(label, options=ordered, default=default_keys,
+                          format_func=fmt, key=key)
 
 
-def _pll_safe_sort(df, metric, lower_is_better=False):
-    if df is None or len(df) == 0 or metric not in df.columns:
-        return df
-    out = df.copy()
-    out[metric] = pd.to_numeric(out[metric], errors="coerce")
-    return out.sort_values(metric, ascending=lower_is_better, na_position="last")
+# ============================================================
+# DATA HELPERS
+# ============================================================
+
+def _pll_select_existing(df: pd.DataFrame, cols: Iterable[str]) -> list[str]:
+    return M.existing(df, cols)
 
 
-def _pll_apply_goalie_save_pct(df):
+def _pll_safe_sort(df: pd.DataFrame, metric: str,
+                   lower_is_better: bool | None = None) -> pd.DataFrame:
+    ascending = lower_is_better if lower_is_better is not None else None
+    return M.sort_df(df, metric, ascending=ascending)
+
+
+def _pll_apply_goalie_save_pct(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recompute goalie save% as saves / (saves + goals against).
+
+    Needed because the source save_pct can exceed 1 on partial-game rows. Also
+    adds shots_faced_calc, since the provider doesn't supply shots faced.
+    """
     if df is None or len(df) == 0:
         return df
     out = df.copy()
-    saves = pd.to_numeric(out["saves"], errors="coerce") if "saves" in out.columns else pd.Series(np.nan, index=out.index)
+
+    saves = (pd.to_numeric(out["saves"], errors="coerce") if "saves" in out.columns
+             else pd.Series(np.nan, index=out.index))
     if "goals_against" in out.columns:
-        goals_against = pd.to_numeric(out["goals_against"], errors="coerce")
+        against = pd.to_numeric(out["goals_against"], errors="coerce")
     elif "scores_against" in out.columns:
-        goals_against = pd.to_numeric(out["scores_against"], errors="coerce")
+        against = pd.to_numeric(out["scores_against"], errors="coerce")
     else:
-        goals_against = pd.Series(np.nan, index=out.index)
-    shots_faced = saves + goals_against
-    save_pct = saves / shots_faced.replace(0, np.nan)
+        against = pd.Series(np.nan, index=out.index)
+
+    shots_faced = saves + against
     out["shots_faced_calc"] = shots_faced
-    out["save_pct_display"] = save_pct.clip(lower=0, upper=1)
+    out["save_pct_display"] = (saves / shots_faced.replace(0, np.nan)).clip(lower=0, upper=1)
     out["save_pct_display_pct"] = out["save_pct_display"].apply(_pll_pct_text)
     if "games" in out.columns:
         games = pd.to_numeric(out["games"], errors="coerce").replace(0, np.nan)
@@ -865,26 +960,46 @@ def _pll_apply_goalie_save_pct(df):
     return out
 
 
-def _pll_add_possession_mmss(df):
+def _pll_add_possession_mmss(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or len(df) == 0:
         return df
     out = df.copy()
     if "time_in_possession_per_game" in out.columns:
-        out["time_in_possession_per_game_mmss"] = out["time_in_possession_per_game"].apply(_pll_seconds_to_mmss)
+        out["time_in_possession_per_game_mmss"] = \
+            out["time_in_possession_per_game"].apply(_pll_seconds_to_mmss)
     elif "time_in_possession" in out.columns and "games" in out.columns:
         games = pd.to_numeric(out["games"], errors="coerce").replace(0, np.nan)
-        out["time_in_possession_per_game"] = pd.to_numeric(out["time_in_possession"], errors="coerce") / games
-        out["time_in_possession_per_game_mmss"] = out["time_in_possession_per_game"].apply(_pll_seconds_to_mmss)
+        out["time_in_possession_per_game"] = \
+            pd.to_numeric(out["time_in_possession"], errors="coerce") / games
+        out["time_in_possession_per_game_mmss"] = \
+            out["time_in_possession_per_game"].apply(_pll_seconds_to_mmss)
     return out
 
 
-def _pll_page_note(title, body):
+def scoreboard(away_name: str, away_score, home_name: str, home_score,
+               meta: str = "", away_sub: str = "", home_sub: str = "") -> None:
+    """
+    Game scoreboard using the shared theme. Page 07 previously injected its own
+    light-theme CSS here, which fought the app's card styling.
+    """
+    def fmt(v):
+        return "—" if v is None or pd.isna(v) else f"{int(round(float(v)))}"
+
     st.markdown(
         f"""
-        <div class="note-box">
-            <div class="note-title">{escape(str(title))}</div>
-            <div>{escape(str(body))}</div>
+        <div class="scoreboard">
+            <div class="scoreboard-team away">
+                <div class="scoreboard-name">{escape(str(away_name))}</div>
+                <div class="scoreboard-record">{escape(str(away_sub))}</div>
+                <div class="scoreboard-score">{fmt(away_score)}</div>
+            </div>
+            <div class="scoreboard-meta">{escape(str(meta))}</div>
+            <div class="scoreboard-team home">
+                <div class="scoreboard-name">{escape(str(home_name))}</div>
+                <div class="scoreboard-record">{escape(str(home_sub))}</div>
+                <div class="scoreboard-score">{fmt(home_score)}</div>
+            </div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )

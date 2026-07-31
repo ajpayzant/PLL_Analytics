@@ -1,78 +1,45 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Team Styles — what kind of team this is, rather than how good it is.
+
+The sidebar filters are not requested: the context and team pickers live in the
+main panel, and the six style scores are min-max scaled inside their own context,
+so restricting the teams shown would change what a score means.
+
+Three helpers came out of here. `_pll_extra_table_exists` re-implemented
+`db.table_exists`; `_pll_context_order` was a byte-for-byte copy of page 13's;
+`_pll_metric_bar` is `ui.metric_bar`. The style weights and the pace caveat now
+come from `shared/scoring.py`, which the Data Guide verifies against the mart.
+"""
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import streamlit as st
 
-from shared.db import query_df, DB_PATH
+from shared import metrics as M
+from shared import page as P
+from shared import scoring
+from shared import ui
+from shared.db import query_df, table_exists
 from shared.ui import (
-    apply_css, stat_card, display_table, download_csv,
+    stat_card, display_table, download_csv,
     fmt_value, pretty_col, profile_header, _pll_select_existing
 )
-from shared.filters import render_sidebar_filters
 
-st.set_page_config(page_title="Team Styles · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
-
-import os
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-
-# ============================================================
-# LOCAL HELPER FUNCTIONS
-# ============================================================
-
-@st.cache_data(ttl=600, show_spinner=False)
-def _pll_extra_table_exists(schema_name, table_name):
-    df = query_df("""
-        SELECT COUNT(*) AS n
-        FROM information_schema.tables
-        WHERE table_schema = ?
-          AND table_name = ?
-    """, [schema_name, table_name])
-    return bool(len(df) > 0 and int(df["n"].iloc[0]) > 0)
+ctx = P.init_page(
+    "Team Styles",
+    "Compare team identity using offense, defense, possession, ball movement, "
+    "pace, and scoring margin.",
+)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _pll_load_team_style_profiles():
-    if not _pll_extra_table_exists("marts", "team_style_profiles"):
+    if not table_exists("marts", "team_style_profiles"):
         return pd.DataFrame()
     return query_df("SELECT * FROM marts.team_style_profiles")
-
-
-def _pll_context_order(df, context_col, type_col, sort_col):
-    if df is None or len(df) == 0:
-        return []
-    work = df.copy()
-    if context_col not in work.columns:
-        return []
-    if type_col not in work.columns:
-        work[type_col] = "Other"
-    if sort_col not in work.columns:
-        labels = work[context_col].astype(str)
-        extracted_year = labels.str.extract(r"(20\d{2})", expand=False)
-        derived = pd.to_numeric(extracted_year, errors="coerce")
-        derived = np.where(labels.str.contains("Career", case=False, na=False), 0, derived)
-        derived = np.where(labels.str.contains("Last 10", case=False, na=False), -10, derived)
-        derived = np.where(labels.str.contains("Last 5", case=False, na=False), -5, derived)
-        work[sort_col] = derived
-    out = work[[context_col, type_col, sort_col]].drop_duplicates().copy()
-    out["_type_order"] = np.where(out[type_col].astype(str).eq("Career"), 0, 1)
-    out["_sort"] = pd.to_numeric(out[sort_col], errors="coerce")
-    out = out.sort_values(["_type_order", "_sort", context_col], ascending=[True, False, True], na_position="last")
-    return out[context_col].tolist()
 
 
 def _pll_prepare_team_profiles(team_profiles):
@@ -90,44 +57,9 @@ def _pll_prepare_team_profiles(team_profiles):
     return df
 
 
-def _pll_metric_bar(df, metric, label_col, color_col=None, title=None, n=20):
-    if df is None or len(df) == 0:
-        st.info("No chart data available.")
-        return
-    if metric not in df.columns or label_col not in df.columns:
-        st.info("Required chart columns are not available.")
-        return
-    chart_df = df.copy()
-    chart_df[metric] = pd.to_numeric(chart_df[metric], errors="coerce")
-    chart_df = chart_df.dropna(subset=[metric]).head(n)
-    if len(chart_df) == 0:
-        st.info("No chart data available.")
-        return
-    chart_df = chart_df.sort_values(metric, ascending=True)
-    fig = px.bar(
-        chart_df,
-        x=metric,
-        y=label_col,
-        color=color_col if color_col in chart_df.columns else None,
-        orientation="h",
-        text=metric,
-        title=title or pretty_col(metric),
-        labels={c: pretty_col(c) for c in chart_df.columns}
-    )
-    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
-    fig.update_layout(yaxis_title="", xaxis_tickformat=".2f", margin=dict(l=10, r=20, t=45, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-
 # ============================================================
 # PAGE CONTENT
 # ============================================================
-
-st.subheader("Team Styles")
-st.markdown(
-    '<div class="section-note">Compare team identity using offense, defense, possession, ball movement, pace, and scoring margin.</div>',
-    unsafe_allow_html=True
-)
 
 team_profiles = _pll_load_team_style_profiles()
 team_profiles = _pll_prepare_team_profiles(team_profiles)
@@ -138,19 +70,13 @@ if len(team_profiles) == 0:
         "Rebuild the warehouse to refresh team style profile data."
     )
 else:
-    profile_context_options = _pll_context_order(
-        team_profiles,
-        "profile_context",
-        "profile_context_type",
-        "profile_context_sort"
-    )
-
-    season_profile_contexts = [c for c in profile_context_options if "Season" in str(c)]
-    default_profile_context = season_profile_contexts[0] if season_profile_contexts else (profile_context_options[0] if profile_context_options else None)
+    profile_context_options = scoring.context_order(team_profiles, "profile_context")
 
     if not profile_context_options:
         st.info("No team style profile contexts found in the data.")
         st.stop()
+
+    default_profile_context = scoring.default_context(profile_context_options)
 
     profile_controls = st.columns([1.2, 1.5, 1.1])
 
@@ -294,16 +220,18 @@ else:
     display_table(filtered_profiles[team_style_display_cols], height=420, hide_cols=[], max_cols=None)
 
     with st.expander("How to Read Team Styles", expanded=False):
+        # Built from shared/scoring.py: the weights, the inputs and the definitions
+        # are the ones the Data Guide re-derives against the mart, so this can no
+        # longer describe a formula the warehouse does not use.
         st.markdown(
-            """
-            - **Overall Style** is the composite team identity score.
-            - **Net Scores/G** is scoring margin per completed, stat-available game.
-            - **Offensive Efficiency** captures how well the team converts chances into scoring.
-            - **Defensive Suppression** captures how well the team limits opponent scoring and shot quality.
-            - **Possession Control** uses possession time, touches, and possession-oriented signals.
-            - **Pace / Tempo** captures volume and speed of play rather than quality alone.
-            """
+            "**Overall Style** is a weighted blend of the six components below — a "
+            "description of how a team plays, not a rating of how well.\n\n"
+            "**Net Scores/G** is scoring margin per completed, stat-available game, "
+            "and is the one column here that *is* a quality measure."
         )
+        ui.display_table(scoring.style_weights_frame(), height=260)
+        st.caption(scoring.STYLE_SCALING_NOTE)
+        ui.note_box("On reading Pace", scoring.STYLE_QUALITY_NOTE)
 
     download_csv(
         filtered_profiles[team_style_display_cols],
@@ -315,13 +243,16 @@ else:
 
     with chart_cols[0]:
         st.markdown(f"### Team Comparison — {pretty_col(selected_profile_metric)}")
-        _pll_metric_bar(
-            filtered_profiles,
-            metric=selected_profile_metric,
-            label_col="team_name",
+        # safe_bar_chart formats the axis and the value labels from the metric
+        # registry, so a percentage renders as a percentage and a score as a score
+        # — the old local helper hardcoded two decimals for everything.
+        ui.safe_bar_chart(
+            filtered_profiles.head(12),
+            x_col="team_name",
+            y_col=selected_profile_metric,
             color_col="team_name",
             title=f"{pretty_col(selected_profile_metric)} — {selected_profile_context}",
-            n=12
+            orientation="h",
         )
 
     with chart_cols[1]:
@@ -354,43 +285,27 @@ else:
                 yaxis_tickformat=".2f",
                 margin=dict(l=10, r=20, t=45, b=10)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
-    st.markdown("### Style Score Breakdown")
+    ui.section(
+        "Style Score Breakdown",
+        "The six components behind Overall Style, per team.",
+    )
 
-    style_score_cols = [
-        c for c in [
-            "team_style_overall_score", "offensive_volume_score",
-            "offensive_efficiency_score", "ball_movement_score",
-            "possession_control_score", "defensive_suppression_score", "pace_tempo_score",
-        ]
-        if c in filtered_profiles.columns
-    ]
+    # The component list comes from the weights, so a component added to the
+    # warehouse appears here without editing this page. Overall Style is prepended
+    # because it is the summary of the other six, not one of them.
+    style_score_cols = M.existing(
+        filtered_profiles,
+        [scoring.STYLE_SCORE_COLUMN] + list(scoring.STYLE_OVERALL_WEIGHTS),
+    )
 
-    if len(filtered_profiles) > 0 and style_score_cols:
-        style_long = filtered_profiles[["team_name"] + style_score_cols].melt(
-            id_vars=["team_name"],
-            value_vars=style_score_cols,
-            var_name="style_metric",
-            value_name="score"
-        )
-        style_long["style_metric_label"] = style_long["style_metric"].apply(pretty_col)
-
-        fig = px.bar(
-            style_long,
-            x="team_name",
-            y="score",
-            color="style_metric_label",
-            barmode="group",
+    if len(filtered_profiles) and style_score_cols:
+        ui.metric_bar(
+            filtered_profiles, "team_name", style_score_cols,
             title=f"Team Style Component Breakdown — {selected_profile_context}",
-            labels={"team_name": "Team", "score": "Score", "style_metric_label": "Metric"}
+            height=460,
         )
-        fig.update_layout(
-            yaxis=dict(range=[0, 100], tickformat=".0f"),
-            xaxis_title="",
-            margin=dict(l=10, r=20, t=45, b=10)
-        )
-        st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Team Detail Profile")
 

@@ -1,181 +1,369 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Data Guide — what each stat means, how each score is built, and what not to trust.
+
+The previous version was three hand-maintained tables of prose. Its ranking
+weights ("Offense: 62% Base Impact + 20% Role Context + 10% Usage + 8% Goal
+Value") matched neither the Player Rankings page nor the warehouse that computes
+the number, and its metric definitions were a 30-row subset while the registry
+carried definitions for far more.
+
+So this page no longer stores its own copy of anything. Definitions come from
+`shared/metrics.py` — the same source the tables and charts format from, meaning a
+definition here is the definition in use. Score weights come from
+`shared/scoring.py`, and the check at the bottom of the Rankings tab re-derives
+the score from the mart's component columns to prove the two still agree.
+"""
+
+from __future__ import annotations
 
 import pandas as pd
+import streamlit as st
 
-from shared.db import DB_PATH
-from shared.ui import apply_css, display_table, note_box
-from shared.filters import render_sidebar_filters
+from shared import metrics as M
+from shared import page as P
+from shared import roles
+from shared import scoring
+from shared import ui
+from shared.db import query_df, table_exists
 
-st.set_page_config(page_title="Data Guide · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
-
-import os
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-
-# ============================================================
-# PAGE CONTENT
-# ============================================================
-
-st.subheader("Data Guide")
-st.markdown(
-    '<div class="section-note">Definitions, formulas, interpretation notes, and known data caveats for the PLL data platform.</div>',
-    unsafe_allow_html=True
+ctx = P.init_page(
+    "Data Guide",
+    "Definitions, formulas and the data's known limits — read from the same "
+    "registry the rest of the app formats with.",
 )
 
-guide_section = st.radio(
-    "Guide section",
-    options=["Core Stats", "Goalie / Faceoff", "Rankings", "Team Style", "Data Notes"],
-    horizontal=True,
-    key="data_guide_section"
+# One representative value per unit, so the glossary can show how a metric renders
+# rather than naming an internal format code the reader has no way to interpret.
+EXAMPLE_VALUES = {
+    M.UNIT_INT: 1234,
+    M.UNIT_NUM1: 12.34,
+    M.UNIT_NUM2: 12.3,
+    M.UNIT_AUTO: 12.34,
+    M.UNIT_PCT01: 0.283,
+    M.UNIT_PCT100: 28.3,
+    M.UNIT_SCORE: 84.2,
+    M.UNIT_SEC: 1275,
+    M.UNIT_SEC_TOTAL: 4830,
+    M.UNIT_TEXT: "text",
+}
+
+tab_glossary, tab_rankings, tab_styles, tab_limits = st.tabs(
+    ["Glossary", "Player Rankings", "Team Styles", "Known limits"]
 )
 
 # ============================================================
-# CORE STATS
+# GLOSSARY
 # ============================================================
 
-if guide_section == "Core Stats":
-    st.markdown("### Core Scoring and Possession Terms")
+with tab_glossary:
+    st.markdown(
+        "Every metric the app knows about, grouped by what it measures. "
+        "The direction column says which way is good, which is what drives sorting "
+        "and the colour scales elsewhere."
+    )
 
-    core_defs = pd.DataFrame([
-        ["Scores", "Team scoreboard total. This can differ from goals because PLL 2-point goals count as two scores.", "Official / source field"],
-        ["Goals", "Total made goals regardless of scoreboard value. A 2-point goal is still one goal but two scores.", "Official / source field"],
-        ["Scoring Points", "Goal scoring value where 1PT goals and 2PT goals are valued by scoreboard impact when available.", "Calculated / source-dependent"],
-        ["1PT Goals", "Goals scored from inside the 2-point arc.", "Official / source field"],
-        ["2PT Goals", "Goals scored from beyond the 2-point arc.", "Official / source field"],
-        ["Points", "Player points: goals plus assists unless otherwise specified by the source table.", "Official / source field"],
-        ["Shots on Goal Rate", "Shots on goal divided by total shots.", "Calculated"],
-        ["Shot %", "Goals divided by shots.", "Calculated"],
-        ["Touches", "Provider-tracked player or team touches. Use as a possession/usage indicator, not as official possession count.", "Provider field"],
-        ["Possession Time", "Provider-tracked time of possession. Displayed in MM:SS when used as a per-game value.", "Provider field"],
-        ["Offensive Sequences", "Estimated offensive possessions/sequence proxy used when official possession counts are unavailable or inconsistent.", "Calculated proxy"],
-    ], columns=["Metric", "Definition", "Source / Notes"])
+    defined = [k for k, m in M.METRICS.items() if m.definition]
+    grouped = M.by_family(defined)
 
-    display_table(core_defs, height=420)
+    search = st.text_input(
+        "Filter", placeholder="save, faceoff, possession…", key="guide_search",
+    ).strip().lower()
 
+    family_options = [M.FAMILY_LABELS.get(f, f.title()) for f in grouped]
+    chosen = st.multiselect(
+        "Families", options=family_options, default=[], key="guide_families",
+        help="Leave empty to show every family.",
+    )
+
+    shown_any = False
+    for fam, keys in grouped.items():
+        label = M.FAMILY_LABELS.get(fam, fam.title())
+        if chosen and label not in chosen:
+            continue
+        rows = []
+        for key in keys:
+            metric = M.METRICS[key]
+            haystack = f"{key} {metric.label} {metric.definition}".lower()
+            if search and search not in haystack:
+                continue
+            rows.append({
+                "metric": metric.label,
+                "column": key,
+                "definition": metric.definition,
+                "direction": M.direction_note(key),
+                "format": M.format_as(metric.unit,
+                                      EXAMPLE_VALUES.get(metric.unit, 12.34)),
+            })
+        if not rows:
+            continue
+        shown_any = True
+        ui.section(label)
+        st.dataframe(
+            pd.DataFrame(rows).rename(columns={
+                "metric": "Metric", "column": "Warehouse Column",
+                "definition": "Definition", "direction": "Direction",
+                "format": "Shown As",
+            }),
+            width="stretch", hide_index=True,
+            height=min(520, 40 + 35 * len(rows)),
+        )
+
+    if not shown_any:
+        st.info("No metrics match that filter.")
+
+    undefined = [k for k, m in M.METRICS.items() if not m.definition]
+    st.caption(
+        f"{len(defined):,} of {len(M.METRICS):,} registered metrics carry a written "
+        f"definition. The remaining {len(undefined):,} are self-explanatory counts "
+        "and identity columns (team name, games, goals) that are labelled and "
+        "formatted but not described."
+    )
 
 # ============================================================
-# GOALIE / FACEOFF
+# PLAYER RANKINGS
 # ============================================================
 
-elif guide_section == "Goalie / Faceoff":
-    st.markdown("### Goalie and Faceoff Terms")
-
-    specialist_defs = pd.DataFrame([
-        ["Save Percentage", "Saves divided by saves plus goals against. The app recalculates this for goalie pages to prevent invalid values above 100%.", "Saves / (Saves + Goals Against)"],
-        ["Shots Faced", "Estimated goalie shots faced based on saves plus goals against.", "Saves + Goals Against"],
-        ["Scores Against", "Opponent scoreboard scores allowed while goalie/team is credited in the source.", "Source field"],
-        ["Goals Against", "Opponent goals allowed. This can differ from scores against when 2-point goals occur.", "Source field"],
-        ["Clean Saves", "Provider-tracked clean saves where available.", "Source field"],
-        ["Messy Saves", "Provider-tracked non-clean saves where available.", "Source field"],
-        ["Faceoff Win %", "Faceoffs won divided by total faceoffs.", "FO Won / Faceoffs"],
-        ["Minimum Faceoffs", "Filter used to avoid small-sample faceoff leaderboard noise.", "User-selected filter"],
-    ], columns=["Metric", "Definition", "Formula / Notes"])
-
-    display_table(specialist_defs, height=420)
-
-
-# ============================================================
-# RANKINGS
-# ============================================================
-
-elif guide_section == "Rankings":
-    st.markdown("### Player Ranking Formula")
+with tab_rankings:
+    # Loaded once and reused: the compression note quotes the mart's own peer-pool
+    # sizes, and the check at the bottom re-derives the score from the same rows.
+    profiles = (query_df("SELECT * FROM marts.player_ranking_profiles")
+                if table_exists("marts", "player_ranking_profiles")
+                else pd.DataFrame())
 
     st.markdown(
-        """
-        The official player ranking page uses **Overall Score**. The goal is to keep rankings grounded in production while also recognizing when a player is genuinely separated from comparable players in his role.
-
-        **Role Context Value** combines three signals:
-
-        - **50% Role Score**: the player's main role score, such as offense, defense, faceoff, or goalie.
-        - **25% Role Percentile**: where the player ranks among players in the same role group.
-        - **25% Peer Separation**: a robust z-score style measure of how far above or below role peers the player is.
-
-        **Peer Separation** is the key improvement over percentile alone. A player can rank first in a role group without being dramatically better than the field; the separation score helps identify whether the gap is actually meaningful.
-        """
+        "**Overall Score** blends three components. Each is on a 0–100 scale where "
+        "50 is league average for the ranking context."
     )
 
-    ranking_defs = pd.DataFrame([
-        ["Base Impact", "General all-around player impact score before final role-context adjustment."],
-        ["Role Score", "Primary score for the player's role: offense, defense, faceoff, or goalie."],
-        ["Role Percentile", "Rank-based position/role signal. Useful for order, but not enough by itself."],
-        ["Peer Separation", "Magnitude-based score based on robust z-score distance from role peers."],
-        ["Role Context Value", "Weighted blend of role score, role percentile, and role separation."],
-        ["Role Tier", "Plain-English tier based on adjusted role separation, such as Elite or High-End."],
-        ["Scoring Value", "Direct scoring value signal that includes scoring points, 1PT goals, 2PT goals, and scoring efficiency."],
-        ["Playmaking Value", "Creation value signal that includes assists, assists per touch, points per touch, passing involvement, and turnover security."],
-        ["Goalie Transfer Adjustment", "Overall-only adjustment that compresses goalie-specific scores toward average instead of subtracting fixed points; goalie-specific views keep full goalie value."],
-    ], columns=["Ranking Term", "Definition"])
+    for key, (name, blurb) in scoring.COMPONENTS.items():
+        st.markdown(f"**{name}** — {blurb}")
 
-    display_table(ranking_defs, height=360)
+    ui.section("Weights by role",
+               "The weighted blend the warehouse applies. Defenders and specialists "
+               "lean harder on their role score because there is less cross-role "
+               "production to measure them by.")
 
-    formula_df = pd.DataFrame([
-        ["Offense", "62% Base Impact + 20% Role Context + 10% Usage + 8% Goal Value"],
-        ["Defense", "58% Base Impact + 34% Role Context + 8% Usage"],
-        ["Faceoff", "74% Base Impact + 14% Role Context + 7% Ground-Ball Value + 5% Usage"],
-        ["Goalie", "72% transfer-adjusted Base Impact + 12% transfer-adjusted Role Context + 10% transfer-adjusted Save % + 6% transfer-adjusted Save Volume"],
-    ], columns=["Role Group", "Overall Score Formula"])
+    weights = scoring.weights_frame()
+    st.dataframe(
+        weights.rename(columns={
+            "role_group": "Role",
+            "role_performance": "Role Performance",
+            "peer_standing": "Peer Standing",
+            "cross_role_impact": "Cross-Role Impact",
+            "role_performance_inputs": "Role Performance is built from",
+        }).style.format({
+            "Role Performance": "{:.0%}",
+            "Peer Standing": "{:.0%}",
+            "Cross-Role Impact": "{:.0%}",
+        }),
+        width="stretch", hide_index=True, height=190,
+    )
 
-    display_table(formula_df, height=240)
+    # Career is the widest pool, and the one the note quotes. Pools halve in a
+    # single-season context, which the limits tab shows in full.
+    career = (profiles[profiles["ranking_context"] == "Career"]
+              if "ranking_context" in profiles.columns else profiles)
+    ui.note_box(
+        "Specialist compression",
+        scoring.transfer_note(scoring.peer_sizes_from_mart(career), "the career view"),
+    )
+    ui.note_box("Scale calibration", scoring.CALIBRATION_NOTE)
 
+    ui.section("Score tiers", "How to read a score at a glance.")
+    st.dataframe(
+        pd.DataFrame(scoring.SCORE_TIERS, columns=["Score", "Tier", "Meaning"]),
+        width="stretch", hide_index=True, height=220,
+    )
+
+    # The weights above are asserted by this page; this check proves them.
+    ui.section("Formula check",
+               "The weights on this page are re-applied to the mart's own component "
+               "columns and compared against its published score. Agreement means "
+               "this page still describes what the warehouse actually does.")
+
+    if len(profiles):
+        results = []
+        contexts = (profiles["ranking_context"].dropna().unique()
+                    if "ranking_context" in profiles.columns else [None])
+        for context in contexts:
+            subset = (profiles if context is None
+                      else profiles[profiles["ranking_context"] == context])
+            check = scoring.verify_against_mart(subset)
+            results.append({
+                "context": context or "All",
+                "players_checked": check["checked"],
+                "agrees": "yes" if check["matches"] else "no",
+                "spread": check["spread"],
+                "calibration_shift": check.get("median_shift"),
+            })
+        frame = pd.DataFrame(results)
+        st.dataframe(
+            frame.rename(columns={
+                "context": "Ranking Context", "players_checked": "Players Checked",
+                "agrees": "Agrees", "spread": "Spread",
+                "calibration_shift": "Calibration Shift",
+            }).style.format({"Spread": "{:.4f}", "Calibration Shift": "{:+.3f}"},
+                            na_rep="—"),
+            width="stretch", hide_index=True, height=180,
+        )
+        st.caption(
+            "Spread is the range of the difference between the rebuilt and published "
+            "scores within a context. It is not zero because the warehouse shifts "
+            "each context's median toward 50 after blending — a constant offset, "
+            "shown in the last column. A spread near zero means only that constant "
+            "separates them."
+        )
+        if any(r["agrees"] == "no" for r in results):
+            st.error(
+                "The weights on this page no longer reproduce the mart's score. "
+                "`shared/scoring.py` needs updating against "
+                "`scripts/build_warehouse.py`."
+            )
+    else:
+        st.info("The ranking mart is not present in this warehouse build.")
 
 # ============================================================
-# TEAM STYLE
+# TEAM STYLES
 # ============================================================
 
-elif guide_section == "Team Style":
-    st.markdown("### Team Style Profile Formula")
+with tab_styles:
+    st.markdown(
+        "Team style scores describe **how** a team plays rather than how well. "
+        "There are six, each a 0–100 blend of per-game rates, and one overall score "
+        "that blends the six."
+    )
 
-    team_style_defs = pd.DataFrame([
-        ["Overall Style", "Composite team identity score combining offense, defense, possession, ball movement, and tempo."],
-        ["Offensive Volume", "How much offensive activity a team generates through scores, shots, touches, and sequences."],
-        ["Offensive Efficiency", "How efficiently a team converts offensive chances into scores/goals."],
-        ["Ball Movement", "Passing and assist-oriented style signal."],
-        ["Possession Control", "Touches, possession time, and possession-oriented team indicators."],
-        ["Defensive Suppression", "How well a team limits opponent scoring, shot quality, and efficiency."],
-        ["Pace / Tempo", "How quickly or actively a team plays based on possession and volume signals."],
-        ["Net Scores/G", "Scores per game minus scores allowed per game."],
-    ], columns=["Team Style Metric", "Definition"])
+    ui.section("What each score measures",
+               "And what it is built from, with each input's weight inside that "
+               "score. The first column's weight is the score's share of Overall "
+               "Style.")
 
-    display_table(team_style_defs, height=420)
+    style_weights = scoring.style_weights_frame()
+    st.dataframe(
+        style_weights.rename(columns={
+            "style_score": "Style Score",
+            "weight_in_overall": "Share of Overall",
+            "built_from": "Built From",
+            "definition": "Measures",
+        }).style.format({"Share of Overall": "{:.0%}"}),
+        width="stretch", hide_index=True, height=250,
+    )
 
+    ui.note_box("Style is not quality", scoring.STYLE_QUALITY_NOTE)
+    ui.note_box("Scores are relative to the teams shown", scoring.STYLE_SCALING_NOTE)
+
+    ui.section("Label bands",
+               "The text profiles (Pace, Offensive Profile, Defensive Profile, "
+               "Possession Profile) are these bands applied to the matching score.")
+    st.dataframe(
+        pd.DataFrame(scoring.STYLE_LABEL_BANDS, columns=["Score", "Band"]),
+        width="stretch", hide_index=True, height=220,
+    )
+
+    ui.section("Formula check",
+               "The shares above are re-applied to the mart's component scores and "
+               "compared against its published Overall Style.")
+    if table_exists("marts", "team_style_profiles"):
+        style_check = scoring.verify_style_overall(
+            query_df("SELECT * FROM marts.team_style_profiles"))
+        if style_check["checked"]:
+            st.caption(
+                f"{style_check['checked']:,} team-context rows checked — "
+                f"largest difference {style_check['max_diff']:.4f}."
+            )
+            if not style_check["matches"]:
+                st.error(
+                    "The style weights on this page no longer reproduce the mart's "
+                    "Overall Style. `shared/scoring.py` needs updating against "
+                    "`scripts/build_warehouse.py`."
+                )
+        else:
+            st.info("The style mart does not carry the component score columns.")
+    else:
+        st.info("The team style mart is not present in this warehouse build.")
 
 # ============================================================
-# DATA NOTES
+# KNOWN LIMITS
 # ============================================================
 
-elif guide_section == "Data Notes":
-    st.markdown("### Data Source and Interpretation Notes")
-
-    note_box(
-        "Completed vs Scheduled Games",
-        "The app separates completed stat-available games from scheduled games. Current-season totals can be partial until new games are scraped and processed."
+with tab_limits:
+    st.markdown(
+        "What this data cannot tell you. Each of these affects how a number on "
+        "another page should be read."
     )
 
-    note_box(
-        "2026 Current Season",
-        "2026 is an in-progress season in the current warehouse. Early-season ranks, trends, and team profiles should be interpreted with sample size in mind."
+    current = max(ctx.seasons) if ctx.seasons else None
+
+    ui.note_box(
+        "Completed games versus scheduled games",
+        "Every average and total in the app is built from games whose stats have "
+        "landed in the warehouse. A game that has been played but not yet scraped "
+        "is still flagged `scheduled` and contributes nothing — see the Schedule "
+        "page, which separates the two, and Data QA for coverage by season.",
     )
 
-    note_box(
-        "Possession Data Note",
-        "PLL provider possession fields are not perfectly consistent across all historical games. The app displays possession time in MM:SS where appropriate and exposes data-quality warnings separately."
+    if current is not None:
+        ui.note_box(
+            f"{current} is in progress",
+            "Early-season ranks, trends and composite scores rest on few games. The "
+            "ranking scores compress specialists harder in small samples for exactly "
+            "this reason, but a ten-game sample is still a ten-game sample.",
+        )
+
+    ui.note_box(
+        "Possession data is provider-tracked",
+        "Possession time and the offensive-sequence proxy come from the provider "
+        "feed and are not consistent across every historical game. Everything "
+        "per-100-possessions depends on them, so check coverage on Data QA before "
+        "leaning on a pace-adjusted figure.",
     )
 
-    note_box(
-        "Official vs Calculated Fields",
-        "Some fields come directly from the source, while others are calculated to improve consistency, formatting, or interpretability."
+    ui.note_box(
+        "Offensive sequences are a proxy, not a possession count",
+        "The league does not publish a possession count the way basketball does. "
+        "`offensive_sequence_proxy` is estimated, so per-100 rates are good for "
+        "comparing teams within a season and poor for precise claims about a rate's "
+        "absolute level.",
     )
+
+    ui.note_box(
+        "Scores and goals are different things",
+        "A two-point goal is one goal and two scores. Any comparison of scoring "
+        "needs to pick one and stay with it — the registry's labels say which is "
+        "which, and the Glossary tab spells out both.",
+    )
+
+    ui.note_box(
+        "Composite scores are opinions",
+        "Overall Score, the role scores and the style scores are weighted blends "
+        "chosen by this project, not league-official figures. The Player Rankings "
+        "tab shows every weight so the opinion is inspectable and arguable.",
+    )
+
+    ui.note_box(
+        "A rank is only as wide as its pool",
+        "Specialist ranks and all-player ranks answer different questions. The "
+        "pools below are what a player is actually compared against in each "
+        "ranking context — a season pool is roughly half a career pool, so "
+        "\"third among goalies\" means less in one than the other.",
+    )
+
+    pools = scoring.peer_sizes_frame(profiles)
+    if len(pools):
+        ui.section("Peer-pool sizes by ranking context")
+        ui.display_table(
+            pools.rename(columns={"ranking_context": "Ranking Context"}), height=280)
+    else:
+        counted = roles.role_counts(ctx.players)
+        if len(counted):
+            ui.section("Players by role")
+            ui.display_table(counted, height=200)
+
+st.divider()
+nav = st.columns(3)
+with nav[0]:
+    P.link_to("rankings", "Player rankings →")
+with nav[1]:
+    P.link_to("styles", "Team styles →")
+with nav[2]:
+    P.link_to("qa", "Data QA →")

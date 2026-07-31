@@ -12,5 +12,16 @@ runOnSave = false
 [browser]
 gatherUsageStats = false
 
+# Pin the theme. Without this block the app inherited each viewer's browser
+# light/dark preference, so the shared card CSS could render low-contrast text.
+# Dark base matches the charts and table styling the app was built against.
+[theme]
+base = "dark"
+primaryColor = "#3b82f6"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1a1f2b"
+textColor = "#e6e9ef"
+font = "sans serif"
+
 [runner]
 fastReruns = true

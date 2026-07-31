@@ -1,39 +1,37 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Data QA — is the warehouse complete, and can the numbers be trusted?
+
+This is the only page whose subject is the data rather than the lacrosse. The
+warehouse row counts that used to open the Overview page live here now: "6,756
+player-game rows" answers a data-engineering question, and putting it above the
+scoring leaders implied the reader should care about it before the analysis.
+
+Coverage by season is the part that actually changes how you read other pages, so
+it comes first, ahead of the check tables.
+"""
+
+from __future__ import annotations
 
 import os
+
 import pandas as pd
+import streamlit as st
 
-from shared.db import query_df, schedule_display_table, table_exists, table_index, DB_PATH, ARTIFACT_INDEX_PATH
-from shared.ui import apply_css, stat_card, display_table, fmt_value
-from shared.filters import render_sidebar_filters
+from shared import metrics as M
+from shared import page as P
+from shared import ui
+from shared.db import (ARTIFACT_INDEX_PATH, DB_PATH, query_df,
+                       schedule_display_table, startup_counts, table_exists,
+                       table_index)
 
-st.set_page_config(page_title="Data QA · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
-
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-
-# ============================================================
-# PAGE CONTENT
-# ============================================================
-
-st.subheader("Data QA")
-st.markdown(
-    '<div class="section-note">Warehouse validation, status repair checks, and artifact inventory.</div>',
-    unsafe_allow_html=True
+ctx = P.init_page(
+    "Data QA",
+    "Warehouse coverage, validation checks and artifact inventory.",
 )
+
+# ============================================================
+# QUALITY HEADLINE
+# ============================================================
 
 quality = query_df("""
     SELECT *
@@ -48,80 +46,197 @@ quality = query_df("""
         check_name
 """)
 
-fail_count = int((quality["status"] == "fail").sum()) if "status" in quality.columns else 0
-warning_count = int((quality["status"] == "warning").sum()) if "status" in quality.columns else 0
-pass_count = int((quality["status"] == "pass").sum()) if "status" in quality.columns else 0
-total = len(quality)
+statuses = quality["status"] if "status" in quality.columns else pd.Series(dtype=str)
+fail_count = int((statuses == "fail").sum())
+warning_count = int((statuses == "warning").sum())
+pass_count = int((statuses == "pass").sum())
 
-q1, q2, q3, q4 = st.columns(4)
+k = st.columns(4)
+with k[0]:
+    ui.stat_card("Failures", f"{fail_count:,}",
+                 tone="bad" if fail_count else "good",
+                 sub="needs attention" if fail_count else "none")
+with k[1]:
+    ui.stat_card("Warnings", f"{warning_count:,}",
+                 sub="review before trusting affected pages" if warning_count else "none")
+with k[2]:
+    ui.stat_card("Passes", f"{pass_count:,}")
+with k[3]:
+    ui.stat_card("Total Checks", f"{len(quality):,}")
 
-with q1:
-    stat_card("Failures", fmt_value(fail_count, 0))
+if fail_count:
+    ui.note_box(
+        "Failing checks present",
+        "Numbers on the analysis pages that depend on a failing check may be "
+        "wrong. The Quality Checks table below names the affected area.",
+    )
 
-with q2:
-    stat_card("Warnings", fmt_value(warning_count, 0))
+# ============================================================
+# WAREHOUSE CONTENTS
+# ============================================================
 
-with q3:
-    stat_card("Passes", fmt_value(pass_count, 0))
-
-with q4:
-    stat_card("Total Checks", fmt_value(total, 0))
-
-st.markdown("### Quality Checks")
-display_table(quality, height=520)
-
-st.markdown("### 2023 Schedule Status Repair Check")
-
-status_repair = schedule_display_table()
-status_repair = (
-    status_repair[status_repair["season"] == 2023]
-    .groupby(["event_status_label", "status_display"])
-    .size()
-    .reset_index(name="games")
+ui.section(
+    "Warehouse contents",
+    "Row counts for the tables every other page reads. These moved here from the "
+    "Overview page, which now leads with analysis instead.",
 )
 
-display_table(status_repair, height=180)
+counts = startup_counts()
+cards = st.columns(5)
+# `players`/`teams` are spelled out rather than passed through the registry: those
+# keys name a text column elsewhere in the warehouse (a comma-joined team list),
+# and one key can't mean two things.
+for col, (key, label) in zip(cards, [
+    ("completed_games", None),
+    ("player_game_rows", None),
+    ("team_game_rows", None),
+    ("players", "Players"),
+    ("teams", "Teams"),
+]):
+    with col:
+        ui.stat_card(label or M.label(key), f"{int(counts.get(key, 0)):,}")
+ui.definition_caption(["completed_games", "player_game_rows", "team_game_rows"])
 
-st.markdown("### Defensive / Opponent Build QC")
+# Season coverage is the readout that changes how the rest of the app should be
+# read: a season with few stat-available games gives thin per-game averages.
+schedule = schedule_display_table()
 
-if table_exists("qc", "defensive_opponent_build_quality"):
-    defensive_qc_df = query_df("""
-        SELECT *
-        FROM qc.defensive_opponent_build_quality
-        ORDER BY status, check_name
-    """)
-    display_table(defensive_qc_df, height=320)
-else:
-    st.info("No defensive/opponent QC table found.")
+stat_games = query_df("""
+    SELECT season, COUNT(DISTINCT game_id) AS stat_available_games
+    FROM clean.game_manifest
+    GROUP BY season
+    ORDER BY season
+""")
 
-st.markdown("### Possession Data QC")
+scheduled = (schedule.groupby("season", dropna=False).size()
+             .reset_index(name="scheduled_games"))
+coverage = scheduled.merge(stat_games, on="season", how="outer").sort_values("season")
+coverage["stat_available_games"] = coverage["stat_available_games"].fillna(0)
+coverage["coverage_pct"] = (
+    pd.to_numeric(coverage["stat_available_games"], errors="coerce")
+    / pd.to_numeric(coverage["scheduled_games"], errors="coerce").replace(0, pd.NA)
+)
 
-if table_exists("qc", "game_possession_quality"):
-    possession_qc_df = query_df("""
-        SELECT *
-        FROM qc.game_possession_quality
-        ORDER BY
-            CASE possession_data_status
-                WHEN 'normal' THEN 4
-                WHEN 'extended_or_ot_clock' THEN 3
-                WHEN 'short_or_provider_clock' THEN 2
-                WHEN 'missing_possession_time' THEN 1
-                ELSE 0
-            END,
-            season,
-            game_number
-    """)
-    display_table(possession_qc_df, height=360)
-else:
-    st.info("No game possession quality table found.")
+left, right = st.columns([1.0, 1.2])
+with left:
+    st.markdown("**Stat coverage by season**")
+    ui.display_table(coverage, height=300, highlight="coverage_pct")
+with right:
+    st.markdown("**Schedule status by season**")
+    status_counts = (
+        schedule.groupby(["season", "status_display"], dropna=False)
+        .size().reset_index(name="games")
+        .sort_values(["season", "status_display"])
+    )
+    ui.safe_bar_chart(
+        status_counts,
+        x_col="season",
+        y_col="games",
+        color_col="status_display",
+        title="Scheduled games by status",
+    )
 
-st.markdown("### Warehouse Tables")
-display_table(table_index(), height=520)
+# The in-progress season is always short of its scheduled games, so flagging it
+# would make this warning permanent noise. Only completed seasons are a problem.
+current = max(ctx.seasons) if ctx.seasons else None
+thin = coverage[
+    (pd.to_numeric(coverage["coverage_pct"], errors="coerce") < 0.9)
+    & (coverage["season"] != current)
+]
+if len(thin):
+    seasons_text = ", ".join(str(s) for s in thin["season"].tolist())
+    st.warning(
+        f"Under 90% stat coverage in {seasons_text}, which is finished. Season "
+        "totals there are built on a partial set of games, so compare rates "
+        "rather than totals."
+    )
+if current is not None:
+    st.caption(
+        f"{current} is in progress, so its coverage is expected to be below 100%."
+    )
 
-st.markdown("### Artifact Index")
+# ============================================================
+# CHECKS
+# ============================================================
 
-if os.path.exists(ARTIFACT_INDEX_PATH):
-    artifact_index = pd.read_csv(ARTIFACT_INDEX_PATH)
-    display_table(artifact_index, height=520)
-else:
-    st.warning("artifact_index.csv was not found.")
+ui.section("Quality checks", "Automated validation run when the warehouse is built.")
+ui.display_table(quality, height=460)
+
+with st.expander("2023 schedule status repair check", expanded=False):
+    st.caption(
+        "The 2023 feed reported statuses the rest of the app can't use directly. "
+        "This maps the raw label to the repaired one, so the repair can be audited."
+    )
+    repair = schedule_display_table()
+    repair = (
+        repair[repair["season"] == 2023]
+        .groupby(["event_status_label", "status_display"])
+        .size().reset_index(name="games")
+    )
+    ui.display_table(repair, height=200)
+
+with st.expander("Defensive / opponent build QC", expanded=False):
+    if table_exists("qc", "defensive_opponent_build_quality"):
+        ui.display_table(
+            query_df("""
+                SELECT * FROM qc.defensive_opponent_build_quality
+                ORDER BY status, check_name
+            """),
+            height=320,
+        )
+    else:
+        st.info("No defensive/opponent QC table in this warehouse build.")
+
+with st.expander("Possession data QC", expanded=False):
+    st.caption(
+        "Possession time is provider-tracked and imperfect. Every per-100-possession "
+        "figure in the app rests on these rows, so anything other than `normal` is "
+        "worth knowing about."
+    )
+    if table_exists("qc", "game_possession_quality"):
+        possession = query_df("""
+            SELECT *
+            FROM qc.game_possession_quality
+            ORDER BY
+                CASE possession_data_status
+                    WHEN 'normal' THEN 4
+                    WHEN 'extended_or_ot_clock' THEN 3
+                    WHEN 'short_or_provider_clock' THEN 2
+                    WHEN 'missing_possession_time' THEN 1
+                    ELSE 0
+                END,
+                season,
+                game_number
+        """)
+        if "possession_data_status" in possession.columns:
+            summary = (possession["possession_data_status"].value_counts()
+                       .rename_axis("possession_data_status")
+                       .reset_index(name="games"))
+            ui.display_table(summary, height=180)
+        # Game-level rows read from qc.*, where the pct columns are 0–1.
+        ui.display_table(possession, height=360, clean_schema=True)
+    else:
+        st.info("No game possession quality table in this warehouse build.")
+
+with st.expander("Warehouse tables", expanded=False):
+    ui.display_table(table_index(), height=460)
+
+with st.expander("Artifact index", expanded=False):
+    if os.path.exists(ARTIFACT_INDEX_PATH):
+        ui.display_table(pd.read_csv(ARTIFACT_INDEX_PATH), height=460)
+    else:
+        st.caption(
+            "`artifact_index.csv` is not present. It is written by the warehouse "
+            "build and is not required for the app to run."
+        )
+
+st.caption(f"Warehouse: `{DB_PATH}`")
+
+st.divider()
+nav = st.columns(3)
+with nav[0]:
+    P.link_to("league", "League overview →")
+with nav[1]:
+    P.link_to("guide", "Data guide →")
+with nav[2]:
+    P.link_to("schedule", "Schedule →")

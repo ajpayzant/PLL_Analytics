@@ -1,48 +1,63 @@
-import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+"""
+Compare Players — two to six players side by side.
+
+The sidebar filters are not requested: every query here is driven by the player
+multiselect and the context radio in the main panel.
+
+The default selection now honours a player chosen on another page, so following a
+name from the Rankings or Leaderboards lands with that player already loaded
+instead of on whichever two happened to sort first.
+
+The Last 5 / Last 10 contexts compared different eras. They read
+`marts.player_last5_stats`, whose rows are each player's last five games played
+in any season: 195 of the 400 players in it have windows that end before 2026 and
+88 span two seasons. Putting Matt Abbott (last played August 2022) next to an
+active player under the heading "Last 5" compared 2022 form against 2026 form
+with nothing on screen saying so. Both contexts now read the season-scoped marts
+and take a season, so the two sides of the comparison cover the same stretch of
+lacrosse.
+"""
+
+from __future__ import annotations
 
 import plotly.express as px
-from shared.db import query_df, filter_values
+import streamlit as st
+
+from shared import page as P
+from shared.db import query_df
 from shared.ui import (
-    apply_css, safe_bar_chart, display_table, display_comparison_matrix,
-    fmt_value, pretty_col, profile_summary_cards, clean_chart_x, standardize_chart
+    safe_bar_chart, display_comparison_matrix, pretty_col,
+    profile_summary_cards, clean_chart_x, standardize_chart,
 )
-from shared.filters import render_sidebar_filters
 
-st.set_page_config(page_title="Compare Players · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
+ctx = P.init_page(
+    "Compare Players",
+    "Compare players with profile cards, matrix-style summaries, trends, and "
+    "recent-form splits.",
+)
 
-import os
-from shared.db import DB_PATH
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
+seasons = ctx.seasons
+player_names = ctx.player_names
 
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-st.subheader("Compare Players")
-st.markdown('<div class="section-note">Compare players with profile cards, matrix-style summaries, trends, and recent-form splits.</div>', unsafe_allow_html=True)
-
-player_names = players_df["full_name"].dropna().unique().tolist()
+# A player picked elsewhere leads the default pair; otherwise fall back to the
+# first two names so the page has something to show on a cold open.
+incoming = P.selected_player()
+if incoming in player_names:
+    default_players = [incoming] + [n for n in player_names if n != incoming][:1]
+else:
+    default_players = player_names[:2]
 
 selected_compare_players = st.multiselect(
     "Select 2–6 players",
     options=player_names,
-    default=player_names[:2] if len(player_names) >= 2 else player_names,
+    default=default_players,
     key="compare_players"
 )
 
 if len(selected_compare_players) < 2:
     st.info("Select at least two players to compare.")
 else:
-    player_ids = players_df[players_df["full_name"].isin(selected_compare_players)]["player_id"].tolist()
+    player_ids = ctx.player_ids_for(selected_compare_players)
     placeholders = ", ".join(["?"] * len(player_ids))
 
     compare_context = st.radio(
@@ -59,25 +74,37 @@ else:
             ORDER BY points DESC NULLS LAST
         """, player_ids)
 
-    elif compare_context == "Last 5":
+    elif compare_context in ("Last 5", "Last 10"):
+        # Season-scoped, and the season is explicit. The league-wide last5 mart
+        # holds each player's last games in any season, so this comparison used to
+        # put one player's 2026 window beside another's 2022 window.
+        form_season = st.selectbox(
+            "Season for the form window",
+            options=seasons,
+            index=ctx.season_default_index(),
+            key="player_compare_form_season",
+            help="Both players' windows come from this season, so the comparison "
+                 "covers the same stretch of lacrosse.",
+        )
+        form_table = ("marts.player_season_last5_stats" if compare_context == "Last 5"
+                      else "marts.player_season_last10_stats")
         compare_df = query_df(f"""
-            SELECT * FROM marts.player_last5_stats
-            WHERE player_id IN ({placeholders})
+            SELECT * FROM {form_table}
+            WHERE player_id IN ({placeholders}) AND season = ?
             ORDER BY points_per_game DESC NULLS LAST
-        """, player_ids)
+        """, player_ids + [form_season])
 
-    elif compare_context == "Last 10":
-        compare_df = query_df(f"""
-            SELECT * FROM marts.player_last10_stats
-            WHERE player_id IN ({placeholders})
-            ORDER BY points_per_game DESC NULLS LAST
-        """, player_ids)
+        missing = [n for n in selected_compare_players
+                   if n not in set(compare_df.get("full_name", []))]
+        if missing:
+            st.info(f"No {form_season} games for: {', '.join(missing)}. "
+                    "Pick a season they all played, or use Career.")
 
     else:
         selected_compare_season = st.selectbox(
             "Season",
             options=seasons,
-            index=len(seasons) - 1,
+            index=ctx.season_default_index(),
             key="player_compare_season"
         )
         compare_df = query_df(f"""
@@ -163,4 +190,4 @@ else:
             labels={c: pretty_col(c) for c in plot_df.columns}
         )
         fig = standardize_chart(fig, category_x=True)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")

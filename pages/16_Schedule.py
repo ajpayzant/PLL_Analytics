@@ -1,70 +1,108 @@
+"""
+Schedule — every game, played and upcoming.
+
+Two fixes over the previous version. Unplayed games showed "0 — 0" because the
+feed zero-fills the score, which reads as a scoreless draw rather than a game that
+hasn't happened; they now show a dash. And a game whose stats haven't landed is
+still flagged `scheduled` by the feed even after kickoff, so this page separates
+"upcoming" from "awaiting stats" instead of lumping them together — the second
+group is why a season's game count can trail its schedule.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
 import streamlit as st
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from shared.db import query_df, schedule_display_table, filter_values, DB_PATH
-from shared.ui import apply_css, display_table, download_csv
-from shared.filters import render_sidebar_filters
+from shared import metrics as M
+from shared import page as P
+from shared import ui
+from shared.db import schedule_display_table
 
-st.set_page_config(page_title="Schedule · PLL Analytics", page_icon="🥍", layout="wide")
-apply_css()
-
-import os
-if not os.path.exists(DB_PATH):
-    st.error(f"DuckDB warehouse not found: {DB_PATH}")
-    st.stop()
-
-try:
-    seasons, teams_df, players_df, positions, selected_seasons, selected_teams, selected_positions, min_games = render_sidebar_filters()
-except Exception as e:
-    st.error("Failed to load PLL warehouse.")
-    st.exception(e)
-    st.stop()
-
-
-# ============================================================
-# PAGE CONTENT
-# ============================================================
-
-st.subheader("Schedule")
-st.markdown(
-    '<div class="section-note">Full schedule inventory including completed and future games.</div>',
-    unsafe_allow_html=True
+ctx = P.init_page(
+    "Schedule",
+    "Full schedule inventory, including completed and future games.",
 )
 
-schedule_fixed = schedule_display_table()
+schedule = schedule_display_table()
 
-schedule_season = st.selectbox(
-    "Schedule season",
-    options=seasons,
-    index=len(seasons) - 1 if seasons else 0,
-    key="schedule_season"
+controls = st.columns([1, 1.4])
+season = controls[0].selectbox(
+    "Season",
+    options=ctx.seasons,
+    index=P.default_index(ctx.seasons, P.selected_season(), fallback=-1),
+    key="schedule_season",
+)
+if season is not None:
+    P.select_season(season)
+
+sched = schedule[schedule["season"] == season].copy()
+
+# `scheduled` covers two different things once kickoff has passed. Splitting them
+# is the point: the second group explains a gap between games played and games
+# with stats in the warehouse.
+kickoff = pd.to_datetime(sched.get("game_date_guess"), errors="coerce", utc=True)
+now = pd.Timestamp.now(tz="UTC")
+is_scheduled = sched.get("status_display").eq("scheduled") if "status_display" in sched else False
+sched["stage"] = np.where(
+    is_scheduled & (kickoff >= now), "Upcoming",
+    np.where(is_scheduled, "Awaiting stats", "Final"),
 )
 
-status_options = ["all"] + sorted(schedule_fixed["status_display"].dropna().unique().tolist())
-selected_status = st.selectbox("Status", options=status_options, index=0, key="schedule_status_filter")
+view_options = ["All", "Final", "Upcoming", "Awaiting stats"]
+view = controls[1].radio("Show", options=view_options, horizontal=True,
+                         key="schedule_view")
 
-sched = schedule_fixed[schedule_fixed["season"] == schedule_season].copy()
+k = st.columns(4)
+for col, stage in zip(k, ["Final", "Upcoming", "Awaiting stats"]):
+    with col:
+        ui.stat_card(stage, f"{int((sched['stage'] == stage).sum()):,}")
+with k[3]:
+    ui.stat_card("Scheduled Games", f"{len(sched):,}")
 
-if selected_status != "all":
-    sched = sched[sched["status_display"] == selected_status]
+awaiting = int((sched["stage"] == "Awaiting stats").sum())
+if awaiting:
+    ui.note_box(
+        "Games awaiting stats",
+        f"{awaiting} game(s) have passed their scheduled start but have no stats in "
+        "the warehouse yet. They are excluded from every average and total in this "
+        "app until the feed catches up.",
+    )
 
-sched = sched.sort_values("game_number")
+shown = sched if view == "All" else sched[sched["stage"] == view]
 
-display_cols = [
-    "season",
-    "game_number",
-    "game_date_guess",
-    "away_team_name",
-    "home_team_name",
-    "away_score",
-    "home_score",
-    "status_display",
-    "slug"
-]
+display = shown.copy()
+if {"away_team_name", "home_team_name"}.issubset(display.columns):
+    display["matchup"] = (display["away_team_name"].astype(str) + " at "
+                          + display["home_team_name"].astype(str))
+if {"away_score", "home_score"}.issubset(display.columns):
+    away = pd.to_numeric(display["away_score"], errors="coerce")
+    home = pd.to_numeric(display["home_score"], errors="coerce")
+    # The feed zero-fills unplayed games, so a 0–0 here means "not played".
+    played = display["stage"] == "Final"
+    display["result"] = np.where(
+        played,
+        away.fillna(0).astype("Int64").astype(str) + " – "
+        + home.fillna(0).astype("Int64").astype(str),
+        "—",
+    )
 
-display_cols = [c for c in display_cols if c in sched.columns]
+cols = M.existing(display, [
+    "game_number", "game_date_guess", "matchup", "result", "stage",
+    "away_team_name", "home_team_name", "slug",
+])
+sort_col = "game_number" if "game_number" in display.columns else cols[0]
+ui.display_table(display[cols].sort_values(sort_col), height=620,
+                 date_cols=["game_date_guess"],
+                 empty_message=f"No {view.lower()} games in {season}.")
+ui.download_csv(display[cols], f"pll_schedule_{season}.csv")
 
-display_table(sched[display_cols], height=650)
-download_csv(sched[display_cols], f"pll_schedule_{schedule_season}.csv")
+st.divider()
+nav = st.columns(3)
+with nav[0]:
+    P.link_to("matchup", "Matchup preview →")
+with nav[1]:
+    P.link_to("league", "League overview →")
+with nav[2]:
+    P.link_to("qa", "Data QA →")
