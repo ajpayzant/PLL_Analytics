@@ -3731,10 +3731,23 @@ display(
 # ============================================================
 
 def _rank_pct(series, higher_is_better=True):
+    """
+    Percentile rank where the best value scores highest.
+
+    `ascending=higher_is_better` is the correct pairing and is not a typo waiting
+    to be tidied: pandas' `ascending` orders the *ranks*, so for a higher-is-better
+    metric the largest value must sort last to receive the top percentile. This
+    line previously read `ascending=not higher_is_better`, which inverted every
+    score in the ranking mart — the league's best scorer took a points score of
+    0.8 while a 0.25 points-per-game midfielder took 92.2, and overall score
+    correlated -0.93 with points per game. Every component score, peer standing
+    and percentile column in `player_ranking_profiles` flows through here, so the
+    sign of this one comparison decided the whole board.
+    """
     s = pd.to_numeric(series, errors="coerce")
     if s.notna().sum() == 0:
         return pd.Series(np.nan, index=series.index)
-    return s.rank(pct=True, ascending=not higher_is_better, method="average", na_option="keep") * 100
+    return s.rank(pct=True, ascending=higher_is_better, method="average", na_option="keep") * 100
 
 
 def _sigmoid_stretch(percentile_series):
@@ -4363,10 +4376,25 @@ def _add_player_ranking_scores(df):
 
     out = _add_test_style_role_separation(out)
 
-    # Peer Standing Score (PSS): role_primary_score through sigmoid
-    out["peer_standing_score"] = _sigmoid_stretch(_rank_pct(
-        out["role_primary_score"].where(out["role_primary_score"].notna()), True
-    ))
+    # Peer Standing Score (PSS): role_primary_score through sigmoid, ranked
+    # *within role group* — the definition both the Data Guide and the Player
+    # Rankings page give ("where they rank among players in the same role").
+    #
+    # This used to rank role_primary_score across the whole league in one pool.
+    # That is not a peer standing, and it is not even a coherent ranking: each
+    # role's RPS is a weighted average of a different number of differently
+    # correlated components, so the scales are not comparable. A faceoff RPS is
+    # built from 3 stats that correlate at r=0.65 (≈1.3 effective stats), so its
+    # leader averages ~99; an offensive RPS is built from 8 stats correlating at
+    # r=0.37 (≈2.25 effective stats), so even the best attackman is merely good
+    # at something and averages ~92. Pooling those put every specialist above
+    # every attackman before a single game was played.
+    out["peer_standing_score"] = np.nan
+    for _, idx in out.groupby("role_group", dropna=False).groups.items():
+        idx = list(idx)
+        rps = out.loc[idx, "role_primary_score"]
+        out.loc[idx, "peer_standing_score"] = _sigmoid_stretch(
+            _rank_pct(rps.where(rps.notna()), True)).values
 
     out["role_context_value_score"] = _weighted_available_score(out, {
         "role_primary_score": 0.50,
@@ -4535,12 +4563,32 @@ def _build_player_ranking_context(df, context_type, context_label, sort_order):
 
     out = _add_player_ranking_scores(out)
 
-    # Rank every player with a valid score in the selected context.
-    # eligible_for_default_ranking still tells the app whether a player meets the
-    # default sample-size threshold, but the rank columns should not be blank just
-    # because the user lowers Min GP or reviews early-season/small-sample players.
+    # Rank every player with a valid score in the selected context, but rank the
+    # players who meet the games threshold *first* so their numbers are contiguous.
+    #
+    # This block used to rank the whole pool together while the app displayed only
+    # the eligible rows, so the visible 2026 board read 1, 6, 12, 13, 16 — ranks
+    # 2-5 belonged to four one-game players who were then filtered out. `eligible`
+    # was computed here and never used. Small-sample players still receive a rank
+    # (the reason the pool is not simply filtered), they just queue behind the
+    # qualified ones instead of interleaving with them.
     eligible = pd.to_numeric(out["eligible_for_default_ranking"], errors="coerce").fillna(0).eq(1)
     rankable = pd.to_numeric(out.get("overall_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()
+
+    def _official_rank(scores, eligible_flags):
+        """
+        Rank descending with eligible players taking 1..N before ineligible ones.
+
+        Ranking on the tuple (ineligible, -score) via a lexicographic sort key is
+        what keeps the two groups from interleaving.
+        """
+        s = pd.to_numeric(scores, errors="coerce")
+        ineligible = (~eligible_flags.reindex(s.index).fillna(False)).astype(int)
+        order = pd.DataFrame({"blocked": ineligible, "score": s})
+        return (order.sort_values(["blocked", "score"], ascending=[True, False])
+                     .assign(rk=lambda d: np.arange(1, len(d) + 1))
+                     .loc[s.index, "rk"]
+                     .where(s.notna()))
 
     out["overall_rank"] = np.nan
     out["overall_percentile"] = np.nan
@@ -4554,19 +4602,22 @@ def _build_player_ranking_context(df, context_type, context_label, sort_order):
     out["goalie_rank"] = np.nan
 
     if rankable.any():
-        out.loc[rankable, "overall_rank"] = out.loc[rankable, "overall_score"].rank(method="min", ascending=False)
+        out.loc[rankable, "overall_rank"] = _official_rank(
+            out.loc[rankable, "overall_score"], eligible).values
         out.loc[rankable, "overall_percentile"] = _rank_pct(out.loc[rankable, "overall_score"], True).values
 
         for _, idx in out.loc[rankable].groupby("position", dropna=False).groups.items():
             idx = list(idx)
-            out.loc[idx, "position_rank"] = out.loc[idx, "overall_score"].rank(method="min", ascending=False)
+            out.loc[idx, "position_rank"] = _official_rank(
+                out.loc[idx, "overall_score"], eligible).values
             out.loc[idx, "position_percentile"] = _rank_pct(out.loc[idx, "overall_score"], True).values
 
         if "role_context_value_score" in out.columns:
             role_rankable = pd.to_numeric(out["role_context_value_score"], errors="coerce").notna()
             for _, idx in out.loc[role_rankable].groupby("role_group", dropna=False).groups.items():
                 idx = list(idx)
-                out.loc[idx, "role_context_rank"] = out.loc[idx, "role_context_value_score"].rank(method="min", ascending=False)
+                out.loc[idx, "role_context_rank"] = _official_rank(
+                    out.loc[idx, "role_context_value_score"], eligible).values
                 out.loc[idx, "role_context_percentile"] = _rank_pct(out.loc[idx, "role_context_value_score"], True).values
 
         off_rankable = pd.to_numeric(out.get("offensive_score", pd.Series(np.nan, index=out.index)), errors="coerce").notna()

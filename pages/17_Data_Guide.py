@@ -195,6 +195,7 @@ with tab_rankings:
                 "agrees": "yes" if check["matches"] else "no",
                 "spread": check["spread"],
                 "calibration_shift": check.get("median_shift"),
+                "clipped": check.get("clipped", 0),
             })
         frame = pd.DataFrame(results)
         st.dataframe(
@@ -202,6 +203,7 @@ with tab_rankings:
                 "context": "Ranking Context", "players_checked": "Players Checked",
                 "agrees": "Agrees", "spread": "Spread",
                 "calibration_shift": "Calibration Shift",
+                "clipped": "Excluded (at 0/100)",
             }).style.format({"Spread": "{:.4f}", "Calibration Shift": "{:+.3f}"},
                             na_rep="—"),
             width="stretch", hide_index=True, height=180,
@@ -210,8 +212,10 @@ with tab_rankings:
             "Spread is the range of the difference between the rebuilt and published "
             "scores within a context. It is not zero because the warehouse shifts "
             "each context's median toward 50 after blending — a constant offset, "
-            "shown in the last column. A spread near zero means only that constant "
-            "separates them."
+            "shown in the calibration column. A spread near zero means only that "
+            "constant separates them. The last column counts players whose score the "
+            "warehouse clipped to 0 or 100; for them the difference is the clip "
+            "rather than the shift, so they sit outside the comparison."
         )
         if any(r["agrees"] == "no" for r in results):
             st.error(

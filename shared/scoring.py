@@ -459,15 +459,28 @@ def verify_against_mart(df: pd.DataFrame, tolerance: float = 0.5) -> dict:
     a constant per context rather than matching exactly. This reports the spread of
     that difference: a tight spread means the weights here still describe the
     build, a wide one means they have drifted.
+
+    Players the mart clipped to 0 or 100 are excluded from the spread, because for
+    them the difference is no longer the shift. A one-game player whose blend comes
+    to 4.8 in a context shifted by -5.7 would land at -0.9, so the mart publishes 0
+    and the observed difference is -4.8 — an artefact of the floor, not of the
+    weights. `clipped` reports how many were set aside so a real drift can never
+    hide behind the exclusion.
     """
     if df is None or len(df) == 0 or "overall_score" not in df.columns:
-        return {"checked": 0, "matches": False, "spread": float("nan")}
+        return {"checked": 0, "matches": False, "spread": float("nan"),
+                "clipped": 0}
 
     rebuilt = rebuild_overall_score(df)
     actual = pd.to_numeric(df["overall_score"], errors="coerce")
     delta = (actual - rebuilt).dropna()
+
+    at_bound = actual.reindex(delta.index).isin([0.0, 100.0])
+    clipped = int(at_bound.sum())
+    delta = delta[~at_bound]
     if len(delta) == 0:
-        return {"checked": 0, "matches": False, "spread": float("nan")}
+        return {"checked": 0, "matches": False, "spread": float("nan"),
+                "clipped": clipped}
 
     spread = float(delta.max() - delta.min())
     return {
@@ -475,4 +488,5 @@ def verify_against_mart(df: pd.DataFrame, tolerance: float = 0.5) -> dict:
         "matches": spread <= tolerance,
         "spread": spread,
         "median_shift": float(delta.median()),
+        "clipped": clipped,
     }
