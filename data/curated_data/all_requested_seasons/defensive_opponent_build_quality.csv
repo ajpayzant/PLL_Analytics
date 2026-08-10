@@ -1,5 +1,5 @@
 check_name,status,actual,expected,notes
-context_rows_match_team_game_rows,pass,402,402.0,Opponent context should have one row per team-game.
+context_rows_match_team_game_rows,pass,410,410.0,Opponent context should have one row per team-game.
 season_defense_rows,info,40,,One row per season/team with completed stat games.
 career_defense_rows,info,8,,One row per team across all completed stat games.
 missing_opponent_join_rows,pass,0,0.0,Every team-game row should find opponent row from same game.
