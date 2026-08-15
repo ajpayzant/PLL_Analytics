@@ -1,1 +1,2 @@
-_empty_table_name,_note,season,game_id,game_slug,reason,error
+season,slug,reason,team_items,player_items
+2026,2026-ev-47,team_items_not_equal_2,3,37

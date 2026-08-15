@@ -614,3 +614,6 @@ season,game_slug,source_name,http_status,fetch_mode,raw_path,has_payload,has_ite
 2026,2026-ev-45,event_summary,200,cached,/home/runner/work/PLL_Analytics/PLL_Analytics/data/source_data/api_responses/season_2026/game_2026-ev-45/event_summary.json.gz,True,False,,
 2026,2026-ev-45,player_game_stats,200,downloaded,/home/runner/work/PLL_Analytics/PLL_Analytics/data/source_data/api_responses/season_2026/game_2026-ev-45/player_game_stats.json.gz,True,True,38.0,
 2026,2026-ev-45,team_game_stats,200,downloaded,/home/runner/work/PLL_Analytics/PLL_Analytics/data/source_data/api_responses/season_2026/game_2026-ev-45/team_game_stats.json.gz,True,True,2.0,
+2026,2026-ev-47,event_summary,200,cached,/home/runner/work/PLL_Analytics/PLL_Analytics/data/source_data/api_responses/season_2026/game_2026-ev-47/event_summary.json.gz,True,False,,
+2026,2026-ev-47,player_game_stats,200,downloaded,/home/runner/work/PLL_Analytics/PLL_Analytics/data/source_data/api_responses/season_2026/game_2026-ev-47/player_game_stats.json.gz,True,True,37.0,
+2026,2026-ev-47,team_game_stats,200,downloaded,/home/runner/work/PLL_Analytics/PLL_Analytics/data/source_data/api_responses/season_2026/game_2026-ev-47/team_game_stats.json.gz,True,True,3.0,

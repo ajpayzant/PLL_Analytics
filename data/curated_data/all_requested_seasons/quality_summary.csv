@@ -2,9 +2,9 @@ check_name,status,actual,expected,notes
 game_manifest_rows,info,205,,Number of completed/stat-available regular-season games parsed.
 team_game_stats_rows,info,410,,Should usually be 2x game_manifest rows.
 player_game_stats_rows,info,7420,,One row per player-game.
-skipped_games_rows,info,0,,Games skipped due to missing surfaces or invalid stats.
+skipped_games_rows,info,1,,Games skipped due to missing surfaces or invalid stats.
 full_schedule_inventory_rows,info,208,,"Full schedule, including future games."
-stat_slug_inventory_rows,info,205,,Completed/stat-available games only.
+stat_slug_inventory_rows,info,206,,Completed/stat-available games only.
 expected_stat_game_count_2022,pass,40,40.0,Completed regular season expected count.
 expected_stat_game_count_2023,pass,40,40.0,Completed regular season expected count.
 expected_stat_game_count_2024,pass,40,40.0,Completed regular season expected count.
