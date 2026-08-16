@@ -33,6 +33,7 @@ qc,defensive_opponent_build_quality
 qc,event_list_probe_summary
 qc,game_discovery_log
 qc,game_possession_quality
+qc,orphan_stat_rows
 qc,possession_field_quality
 qc,quality_summary
 qc,season_schedule_inventory

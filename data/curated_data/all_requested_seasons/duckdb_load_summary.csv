@@ -39,3 +39,4 @@ qc,game_possession_quality,True
 qc,quality_summary,True
 qc,defensive_opponent_build_quality,True
 qc,skipped_games,True
+qc,orphan_stat_rows,True

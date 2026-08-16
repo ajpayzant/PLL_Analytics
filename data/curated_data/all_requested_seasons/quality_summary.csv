@@ -1,15 +1,16 @@
 check_name,status,actual,expected,notes
-game_manifest_rows,info,205,,Number of completed/stat-available regular-season games parsed.
-team_game_stats_rows,info,410,,Should usually be 2x game_manifest rows.
-player_game_stats_rows,info,7420,,One row per player-game.
-skipped_games_rows,info,1,,Games skipped due to missing surfaces or invalid stats.
+game_manifest_rows,info,207,,Number of completed/stat-available regular-season games parsed.
+team_game_stats_rows,info,414,,Should usually be 2x game_manifest rows.
+player_game_stats_rows,info,7495,,One row per player-game.
+skipped_games_rows,info,0,,Games skipped due to missing surfaces or invalid stats.
+orphan_stat_rows,info,2,,Stat rows dropped for teams that did not play in the event.
 full_schedule_inventory_rows,info,208,,"Full schedule, including future games."
-stat_slug_inventory_rows,info,206,,Completed/stat-available games only.
+stat_slug_inventory_rows,info,207,,Completed/stat-available games only.
 expected_stat_game_count_2022,pass,40,40.0,Completed regular season expected count.
 expected_stat_game_count_2023,pass,40,40.0,Completed regular season expected count.
 expected_stat_game_count_2024,pass,40,40.0,Completed regular season expected count.
 expected_stat_game_count_2025,pass,40,40.0,Completed regular season expected count.
-expected_stat_game_count_2026,info,45,,Ongoing season; only completed games are expected.
+expected_stat_game_count_2026,info,47,,Ongoing season; only completed games are expected.
 full_schedule_game_count_2022,info,40,,"Full schedule count, including scheduled/future games."
 full_schedule_game_count_2023,info,40,,"Full schedule count, including scheduled/future games."
 full_schedule_game_count_2024,info,40,,"Full schedule count, including scheduled/future games."
@@ -26,8 +27,8 @@ official_total_possessions_populated_2022,warning,0,,Raw totalPossessions is onl
 official_total_possessions_populated_2023,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2024,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2025,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
-official_total_possessions_populated_2026,info,70,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
-context_rows_match_team_game_rows,pass,410,410.0,Opponent context should have one row per team-game.
+official_total_possessions_populated_2026,info,74,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
+context_rows_match_team_game_rows,pass,414,414.0,Opponent context should have one row per team-game.
 season_defense_rows,info,40,,One row per season/team with completed stat games.
 career_defense_rows,info,8,,One row per team across all completed stat games.
 missing_opponent_join_rows,pass,0,0.0,Every team-game row should find opponent row from same game.
