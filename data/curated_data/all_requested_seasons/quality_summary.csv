@@ -22,12 +22,12 @@ duplicate_player_game_keys,pass,0,0.0,Duplicate game_id/player_id/team_id rows.
 team_scores_formula,pass,0,0.0,scores should equal one_point_goals + 2 * two_point_goals.
 player_scoring_points_formula,pass,0,0.0,scoring_points should equal one_point_goals + 2 * two_point_goals.
 player_total_points_formula,pass,0,0.0,points should equal scoring_points + assists.
-team_scores_match_game_manifest,warning,4,0.0,Team stats score should match home/away score in game manifest.
+team_scores_match_game_manifest,pass,0,0.0,Team stats score should match home/away score in game manifest.
 official_total_possessions_populated_2022,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2023,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2024,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2025,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
-official_total_possessions_populated_2026,info,76,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
+official_total_possessions_populated_2026,info,74,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 context_rows_match_team_game_rows,pass,416,416.0,Opponent context should have one row per team-game.
 season_defense_rows,info,40,,One row per season/team with completed stat games.
 career_defense_rows,info,8,,One row per team across all completed stat games.
