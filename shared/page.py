@@ -40,6 +40,7 @@ import pandas as pd
 import streamlit as st
 
 from shared import roles
+from shared import segments
 from shared.db import DB_PATH, filter_values
 from shared.ui import apply_css, page_heading
 
@@ -74,6 +75,16 @@ class PageContext:
     selected_teams: list = field(default_factory=list)
     selected_positions: list = field(default_factory=list)
     min_games: int = 1
+    # Which games every stat on the page counts: see shared/segments.py.
+    scope: str = segments.REGULAR
+
+    @property
+    def scope_label(self) -> str:
+        return segments.scope_label(self.scope)
+
+    @property
+    def is_playoff_scope(self) -> bool:
+        return self.scope != segments.REGULAR
 
     # ---------- convenience ----------
 
@@ -151,12 +162,19 @@ def init_page(title: str,
               filters: Sequence[str] = (),
               icon: str = PAGE_ICON,
               layout: str = "wide",
-              heading: bool = True) -> PageContext:
+              heading: bool = True,
+              scope: bool = True) -> PageContext:
     """
     Configure the page, load filter values, render the sidebar, draw the heading.
 
     `filters` lists only the filters this page actually applies; nothing else is
     rendered, so no control on screen is decorative.
+
+    `scope` renders the regular-season / playoffs selector. It is on by default
+    because every page that reads a stat honours it for free — the resolver in
+    shared/segments.py rewrites the table names underneath. Pass scope=False on
+    pages that describe the warehouse rather than sample games (the schedule, the
+    data guide, data QA), where the control would be a lie.
     """
     st.set_page_config(
         page_title=f"{title} · {APP_NAME}",
@@ -190,18 +208,34 @@ def init_page(title: str,
     )
 
     _sync_selection_from_query_params(ctx)
-    _render_sidebar(ctx, filters)
+    _render_sidebar(ctx, filters, scope=scope)
 
     if heading:
         page_heading(title, subtitle)
+
+    # Said once, at the top, so no number below it has to be read twice. Only
+    # when it isn't the default: "regular season" needs no announcing.
+    if scope and ctx.scope != segments.REGULAR:
+        st.caption(f"**{ctx.scope_label}** — {segments.scope_note(ctx.scope)}")
+
     return ctx
 
 
-def _render_sidebar(ctx: PageContext, filters: Sequence[str]) -> None:
+def _render_sidebar(ctx: PageContext, filters: Sequence[str],
+                    scope: bool = True) -> None:
     requested = [f for f in ALL_FILTERS if f in set(filters)]
 
     st.sidebar.title(APP_NAME)
     st.sidebar.caption("PLL player and team analysis")
+
+    # Above the filters, because it decides which games exist before any filter
+    # narrows them.
+    segments.suppress_scope(not scope)
+    if scope:
+        st.sidebar.divider()
+        ctx.scope = segments.render_control()
+    else:
+        ctx.scope = segments.REGULAR
 
     if not requested:
         st.sidebar.divider()

@@ -17,17 +17,21 @@ import streamlit as st
 
 from shared import metrics as M
 from shared import page as P
+from shared import segments
 from shared import ui
 from shared.db import schedule_display_table
 
 ctx = P.init_page(
     "Schedule",
     "Full schedule inventory, including completed and future games.",
+    # This page covers every segment on its own terms, so the sidebar's
+    # regular/playoffs selector would be decorative here.
+    scope=False,
 )
 
 schedule = schedule_display_table()
 
-controls = st.columns([1, 1.4])
+controls = st.columns([1, 1.2, 1.1])
 season = controls[0].selectbox(
     "Season",
     options=ctx.seasons,
@@ -53,6 +57,24 @@ sched["stage"] = np.where(
 view_options = ["All", "Final", "Upcoming", "Awaiting stats"]
 view = controls[1].radio("Show", options=view_options, horizontal=True,
                          key="schedule_view")
+
+# The segment control belongs here rather than in the sidebar: the schedule is one
+# table for every segment, so it filters rows instead of switching tables. It
+# appears only once a build has labelled the fixtures.
+segment_choice = "All"
+if "competition_type" in sched.columns:
+    segment_choice = controls[2].radio(
+        "Segment", options=["All", "Regular season", "Playoffs"], horizontal=True,
+        key="schedule_segment",
+        help="Playoff fixtures are listed as soon as the league publishes the "
+             "bracket, which is before the seeding is known — so an unseeded "
+             "round shows a date and a round name but no teams.",
+    )
+    if segment_choice != "All":
+        sched = segments.filter_frame(
+            sched,
+            segments.REGULAR if segment_choice == "Regular season" else segments.PLAYOFFS,
+        )
 
 k = st.columns(4)
 for col, stage in zip(k, ["Final", "Upcoming", "Awaiting stats"]):
@@ -89,13 +111,20 @@ if {"away_score", "home_score"}.issubset(display.columns):
     )
 
 cols = M.existing(display, [
-    "game_number", "game_date_guess", "matchup", "result", "stage",
-    "away_team_name", "home_team_name", "slug",
+    "game_number", "game_date_guess", "competition_type", "round_label",
+    "matchup", "result", "stage",
+    "away_team_name", "home_team_name", "venue", "slug",
 ])
 sort_col = "game_number" if "game_number" in display.columns else cols[0]
 ui.display_table(display[cols].sort_values(sort_col), height=620,
                  date_cols=["game_date_guess"],
                  empty_message=f"No {view.lower()} games in {season}.")
+# The playoff rows are the ones a reader is least likely to expect, so they are
+# counted out loud rather than left to be noticed in a 23-row table.
+if segment_choice == "All" and "competition_type" in sched.columns:
+    playoff_games = len(segments.filter_frame(sched, segments.PLAYOFFS))
+    if playoff_games:
+        st.caption(f"{playoff_games} of these are playoff games.")
 ui.download_csv(display[cols], f"pll_schedule_{season}.csv")
 
 st.divider()

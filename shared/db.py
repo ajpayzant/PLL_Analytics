@@ -59,22 +59,36 @@ def _run(sql, params=None):
             cur.close()
 
 
+# Every query goes through the segment resolver before it is cached, so the
+# selected scope (regular season / playoffs / both) is part of the cache key —
+# rewriting after the cache would serve one scope's rows under another's key.
+# Pass scoped=False for anything that describes the warehouse itself rather than
+# a sample of games: the directories, the schedule, information_schema, QC.
+
 @st.cache_data(ttl=600, show_spinner=False)
-def query_df(sql, params=None):
+def _query_cached(sql, params=None):
     return _run(sql, params)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def read_table(table_name: str) -> pd.DataFrame:
-    return _run(f"SELECT * FROM {table_name}")
+def query_df(sql, params=None, scoped: bool = True):
+    if scoped:
+        from shared import segments
+        sql = segments.resolve_sql(sql)
+    return _query_cached(sql, params)
+
+
+def read_table(table_name: str, scoped: bool = True) -> pd.DataFrame:
+    return query_df(f"SELECT * FROM {table_name}", scoped=scoped)
 
 
 # ============================================================
 # STARTUP COUNTS
 # ============================================================
 
-@st.cache_data(ttl=600, show_spinner=False)
-def startup_counts():
+# Not cached here: the result depends on the selected segment scope, which is
+# session state rather than an argument, so an outer cache would serve one
+# scope's counts under another's key. query_df caches the query itself.
+def startup_counts(scoped: bool = True):
     df = query_df("""
         SELECT
             (SELECT COUNT(*) FROM clean.game_manifest) AS completed_games,
@@ -82,7 +96,7 @@ def startup_counts():
             (SELECT COUNT(*) FROM clean.team_game_stats) AS team_game_rows,
             (SELECT COUNT(*) FROM clean.player_directory) AS players,
             (SELECT COUNT(*) FROM clean.team_directory) AS teams
-    """)
+    """, scoped=scoped)
     row = df.iloc[0]
     return {
         "completed_games": int(row["completed_games"]),
@@ -99,11 +113,16 @@ def startup_counts():
 
 @st.cache_data(ttl=600, show_spinner=False)
 def filter_values():
+    # Read unscoped throughout: a player's name, position and team are identity,
+    # not a segment, so the pickers must offer every player and team whichever
+    # games are being counted. Scoping them would drop a playoff-only call-up
+    # from the sidebar the moment someone selected "Regular season".
+
     # Seasons
     seasons = []
     for table_name in ["clean.game_schedule_all", "clean.team_game_stats", "clean.player_game_stats"]:
         try:
-            df = read_table(table_name)
+            df = read_table(table_name, scoped=False)
             if df is not None and len(df) > 0 and "season" in df.columns:
                 seasons = (
                     pd.to_numeric(df["season"], errors="coerce")
@@ -120,13 +139,13 @@ def filter_values():
 
     # Teams
     try:
-        teams = read_table("clean.team_directory")
+        teams = read_table("clean.team_directory", scoped=False)
     except Exception:
         teams = pd.DataFrame()
 
     if teams is None or len(teams) == 0:
         try:
-            tgs = read_table("clean.team_game_stats")
+            tgs = read_table("clean.team_game_stats", scoped=False)
             teams = tgs[[c for c in ["team_id", "team_name"] if c in tgs.columns]].copy()
         except Exception:
             teams = pd.DataFrame()
@@ -162,13 +181,13 @@ def filter_values():
 
     # Players
     try:
-        players = read_table("clean.player_directory")
+        players = read_table("clean.player_directory", scoped=False)
     except Exception:
         players = pd.DataFrame()
 
     if players is None or len(players) == 0:
         try:
-            pgs = read_table("clean.player_game_stats")
+            pgs = read_table("clean.player_game_stats", scoped=False)
             candidate_cols = [
                 c for c in [
                     "player_id", "full_name", "player_name", "name", "display_name",
@@ -273,16 +292,25 @@ def table_exists(schema_name, table_name):
         FROM information_schema.tables
         WHERE table_schema = ?
           AND table_name = ?
-    """, [schema_name, table_name])
+    """, [schema_name, table_name], scoped=False)
     return bool(len(df) > 0 and int(df["n"].iloc[0]) > 0)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
 def schedule_display_table():
-    return query_df("""
+    """Every scheduled game, with a display status. Ignores the segment scope.
+
+    The schedule is the fixture list, not a sample of games, so "Playoffs only"
+    must not empty it. `final` is decided from the widest manifest the warehouse
+    has (regular + playoffs) so a played playoff game isn't left looking unplayed.
+    """
+    from shared import segments
+    manifest = (segments.resolve_table("clean", "game_manifest", segments.ALL)
+                or "clean.game_manifest")
+    return query_df(f"""
         WITH stat_games AS (
             SELECT DISTINCT season, game_id
-            FROM clean.game_manifest
+            FROM {manifest}
         )
         SELECT
             s.*,
@@ -295,7 +323,7 @@ def schedule_display_table():
         LEFT JOIN stat_games sg
             ON s.season = sg.season
            AND s.event_id = sg.game_id
-    """)
+    """, scoped=False)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -305,7 +333,7 @@ def table_index():
         FROM information_schema.tables
         WHERE table_schema IN ('clean', 'marts', 'qc')
         ORDER BY table_schema, table_name
-    """)
+    """, scoped=False)
 
 
 def sql_in_filter(column, values):
@@ -323,7 +351,7 @@ def _pll_get_table_columns(schema_name, table_name):
             WHERE table_schema = ?
               AND table_name = ?
             ORDER BY ordinal_position
-        """, [schema_name, table_name])
+        """, [schema_name, table_name], scoped=False)
         return cols_df["column_name"].astype(str).tolist()
     except Exception:
         return []

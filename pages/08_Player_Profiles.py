@@ -45,6 +45,7 @@ from shared import analysis
 from shared import metrics as M
 from shared import page as P
 from shared import roles
+from shared import segments
 from shared import ui
 from shared.db import query_df
 from shared.ui import (
@@ -57,6 +58,12 @@ ctx = P.init_page(
     "Review one player through career, season, recent-form, game-log, and "
     "opponent-split lenses.",
 )
+
+# Whichever segment columns this warehouse build has. They arrive with the
+# postseason ingest, so the game-log queries splice the fragment in rather than
+# naming a column the committed build may not carry yet; shared/ui folds them
+# into one readable column and drops it when every row is a regular-season game.
+seg_cols = segments.select_columns("clean", "player_game_stats")
 
 player_names = ctx.player_names
 
@@ -435,7 +442,8 @@ if selected_player:
         if selected_context != "Career":
             recent_params.append(int(selected_context))
         recent_games = query_df(f"""
-            SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
+            SELECT season, game_number, game_date_utc, {seg_cols}
+                   team_name, opponent_team_name, is_home,
                    points, goals, assists, assist_opportunities, shots, shots_on_goal,
                    ground_balls, turnovers, caused_turnovers,
                    saves, clean_saves, messy_saves, saa, faceoffs_won, faceoffs_lost,
@@ -488,8 +496,9 @@ if selected_player:
 
     st.markdown("### Game Log")
 
-    game_log = query_df("""
-        SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
+    game_log = query_df(f"""
+        SELECT season, game_number, game_date_utc, {seg_cols}
+               team_name, opponent_team_name, is_home,
                points, goals, assists, assist_opportunities, shots, shots_on_goal,
                ground_balls, turnovers, caused_turnovers,
                saves, clean_saves, messy_saves, saa,

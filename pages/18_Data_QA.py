@@ -19,14 +19,18 @@ import streamlit as st
 
 from shared import metrics as M
 from shared import page as P
+from shared import segments
 from shared import ui
-from shared.db import (ARTIFACT_INDEX_PATH, DB_PATH, query_df,
-                       schedule_display_table, startup_counts, table_exists,
-                       table_index)
+from shared.db import (ARTIFACT_INDEX_PATH, DB_PATH, _pll_get_table_columns,
+                       query_df, schedule_display_table, startup_counts,
+                       table_exists, table_index)
 
 ctx = P.init_page(
     "Data QA",
     "Warehouse coverage, validation checks and artifact inventory.",
+    # This page covers every segment on its own terms, so the sidebar's
+    # regular/playoffs selector would be decorative here.
+    scope=False,
 )
 
 # ============================================================
@@ -101,12 +105,18 @@ ui.definition_caption(["completed_games", "player_game_rows", "team_game_rows"])
 # read: a season with few stat-available games gives thin per-game averages.
 schedule = schedule_display_table()
 
-stat_games = query_df("""
+# The widest manifest the build produced, because the schedule it is compared
+# against holds every fixture — counting regular-season stat games against a
+# playoff-inclusive schedule would read as missing data.
+manifest_all = (segments.resolve_table("clean", "game_manifest", segments.ALL)
+                or "clean.game_manifest")
+
+stat_games = query_df(f"""
     SELECT season, COUNT(DISTINCT game_id) AS stat_available_games
-    FROM clean.game_manifest
+    FROM {manifest_all}
     GROUP BY season
     ORDER BY season
-""")
+""", scoped=False)
 
 scheduled = (schedule.groupby("season", dropna=False).size()
              .reset_index(name="scheduled_games"))
@@ -135,6 +145,67 @@ with right:
         color_col="status_display",
         title="Scheduled games by status",
     )
+
+# ============================================================
+# REGULAR SEASON AND PLAYOFFS
+# ============================================================
+#
+# The warehouse keeps three copies of every game-grain table and every mart built
+# from one: regular season (the unsuffixed name, unchanged), `_all` and
+# `_playoffs`. This is where to look when a scope in the sidebar shows fewer
+# numbers than expected — a variant that was not built is a variant the app
+# cannot serve.
+
+ui.section(
+    "Regular season and playoffs",
+    "What the postseason ingest added, and which scoped tables this build wrote.",
+)
+
+manifest_cols = _pll_get_table_columns(*manifest_all.split(".", 1))
+
+if "competition_type" not in manifest_cols:
+    st.info(
+        "This warehouse build predates the postseason ingest: every game in it is "
+        "a regular-season game. Run the **Update PLL Data Warehouse** workflow to "
+        "add playoff games and the scoped tables that go with them."
+    )
+else:
+    by_segment = query_df(f"""
+        SELECT season,
+               competition_type,
+               COUNT(DISTINCT game_id) AS games_with_stats
+        FROM {manifest_all}
+        GROUP BY season, competition_type
+        ORDER BY season, competition_type
+    """, scoped=False)
+
+    seg_left, seg_right = st.columns([1.0, 1.0])
+    with seg_left:
+        st.markdown("**Games with stats by segment**")
+        ui.display_table(by_segment, height=280)
+    with seg_right:
+        st.markdown("**Scoped tables built**")
+        expected = sum(len(names) for names in segments.SCOPED_TABLES.values())
+        rows = []
+        for scope in (segments.ALL, segments.PLAYOFFS):
+            built = sum(
+                1
+                for schema, names in segments.SCOPED_TABLES.items()
+                for table in names
+                if segments.variant_exists(schema, table, scope)
+            )
+            rows.append({
+                "scope": segments.SCOPE_LABEL[scope],
+                "suffix": segments.SCOPE_SUFFIX[scope],
+                "tables_built": built,
+                "tables_expected": expected,
+            })
+        ui.display_table(pd.DataFrame(rows), height=140)
+        st.caption(
+            "A shortfall is not always a fault: a table with no playoff rows at "
+            "all is not written, and the app shows no rows for it rather than "
+            "regular-season rows under a playoff heading."
+        )
 
 # The in-progress season is always short of its scheduled games, so flagging it
 # would make this warning permanent noise. Only completed seasons are a problem.

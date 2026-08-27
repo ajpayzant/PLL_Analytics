@@ -68,6 +68,7 @@ from shared import analysis
 from shared import metrics as M
 from shared import page as P
 from shared import roles
+from shared import segments
 from shared import ui
 from shared.db import query_df
 
@@ -76,6 +77,12 @@ ctx = P.init_page(
     "Goalies and faceoff men, ranked on the metrics their role is actually "
     "judged on.",
 )
+
+# Whichever segment columns this warehouse build has. They arrive with the
+# postseason ingest, so the game-log queries splice the fragment in rather than
+# naming a column the committed build may not carry yet; shared/ui folds them
+# into one readable column and drops it when every row is a regular-season game.
+seg_cols = segments.select_columns("clean", "player_game_stats")
 
 
 # ============================================================
@@ -324,9 +331,9 @@ if section_choice == "Goalies":
             context=goalies, row_index=row.name,
         )
 
-        games = query_df("""
-            SELECT season, game_number, game_date_utc, team_name,
-                   opponent_team_name, is_home, saves, clean_saves, messy_saves,
+        games = query_df(f"""
+            SELECT season, game_number, game_date_utc, {seg_cols}
+                   team_name, opponent_team_name, is_home, saves, clean_saves, messy_saves,
                    goals_against, scores_against, saa, save_pct, clean_save_pct,
                    touches, total_passes
             FROM clean.player_game_stats
@@ -600,9 +607,9 @@ else:
             context=faceoff, row_index=row.name,
         )
 
-        games = query_df("""
-            SELECT season, game_number, game_date_utc, team_name,
-                   opponent_team_name, is_home, points, goals, assists,
+        games = query_df(f"""
+            SELECT season, game_number, game_date_utc, {seg_cols}
+                   team_name, opponent_team_name, is_home, points, goals, assists,
                    ground_balls, faceoffs_won, faceoffs_lost, faceoffs,
                    faceoff_pct, turnovers, caused_turnovers, touches,
                    total_passes

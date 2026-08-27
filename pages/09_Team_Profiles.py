@@ -43,6 +43,7 @@ import streamlit as st
 from shared import analysis
 from shared import metrics as M
 from shared import page as P
+from shared import segments
 from shared import ui
 from shared.db import query_df, table_exists, _pll_get_table_columns
 from shared.ui import (
@@ -54,6 +55,12 @@ ctx = P.init_page(
     "Team Profiles",
     "Team-level career, season, recent-form, game-log and opponent splits.",
 )
+
+# Whichever segment columns this warehouse build has. They arrive with the
+# postseason ingest, so the game-log queries splice the fragment in rather than
+# naming a column the committed build may not carry yet; shared/ui folds them
+# into one readable column and drops it when every row is a regular-season game.
+seg_cols = segments.select_columns("clean", "team_game_stats")
 
 team_options = ctx.team_names
 
@@ -691,7 +698,8 @@ if selected_team:
         if selected_context != "Career":
             recent_params.append(int(selected_context))
         recent_games = query_df(f"""
-            SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
+            SELECT season, game_number, game_date_utc, {seg_cols}
+                   team_name, opponent_team_name, is_home,
                    scores, scores_against, goals, one_point_goals, two_point_goals, assists,
                    shots, shots_on_goal, saves, ground_balls, turnovers, caused_turnovers,
                    faceoffs_won, faceoffs_lost, clears, clear_attempts, touches, total_passes,
@@ -745,8 +753,9 @@ if selected_team:
     # ---- Team Game Log ----
     st.markdown("### Team Game Log")
 
-    game_log = query_df("""
-        SELECT season, game_number, game_date_utc, team_name, opponent_team_name, is_home,
+    game_log = query_df(f"""
+        SELECT season, game_number, game_date_utc, {seg_cols}
+               team_name, opponent_team_name, is_home,
                scores, scores_against, goals, one_point_goals, two_point_goals, assists,
                shots, shots_on_goal, saves, ground_balls, turnovers, caused_turnovers,
                faceoffs_won, faceoffs_lost, clears, clear_attempts, touches, total_passes,

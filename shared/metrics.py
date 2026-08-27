@@ -174,7 +174,14 @@ _REGISTRY: list[Metric] = [
     _m("split_type", "Split", UNIT_TEXT, family="identity"),
     _m("result", "Result", UNIT_TEXT, family="identity"),
     _m("venue", "Venue", UNIT_TEXT, family="identity"),
+    _m("location", "Location", UNIT_TEXT, family="identity"),
     _m("week", "Week", UNIT_INT, family="identity"),
+    _m("official_week", "Week", UNIT_INT, family="identity"),
+    # Which part of the season a game belongs to. `segment` is the display column
+    # pages build from the pair; see shared/segments.segment_display.
+    _m("competition_type", "Segment", UNIT_TEXT, family="identity"),
+    _m("round_label", "Round", UNIT_TEXT, family="identity"),
+    _m("segment", "Segment", UNIT_TEXT, family="identity"),
 
     # ---------- volume / record ----------
     _m("games", "Games", UNIT_INT, family="volume",

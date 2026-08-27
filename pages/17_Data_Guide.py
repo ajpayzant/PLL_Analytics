@@ -30,6 +30,9 @@ ctx = P.init_page(
     "Data Guide",
     "Definitions, formulas and the data's known limits — read from the same "
     "registry the rest of the app formats with.",
+    # This page covers every segment on its own terms, so the sidebar's
+    # regular/playoffs selector would be decorative here.
+    scope=False,
 )
 
 # One representative value per unit, so the glossary can show how a metric renders
@@ -302,6 +305,38 @@ with tab_limits:
     )
 
     current = max(ctx.seasons) if ctx.seasons else None
+
+    # The scope selector is the newest thing a reader can get wrong, so it is
+    # explained before the older caveats.
+    ui.note_box(
+        "Regular season, playoffs, or both",
+        "Every page except this one, the Schedule and Data QA carries a **Games "
+        "included** selector in the sidebar, and it decides which games each stat "
+        "counts:\n\n"
+        "* **Regular season** — the default, and what the league reports its "
+        "leaders on. Unchanged from before playoff games were ingested.\n"
+        "* **Regular + playoffs** — one combined sample. Per-game rates move "
+        "least; totals, career figures and last-5/last-10 windows move most, "
+        "because a playoff game is the most recent game a team played.\n"
+        "* **Playoffs only** — a four-to-five-game sample per team at most. Ranks "
+        "and composite scores built on it are not comparable with regular-season "
+        "ones, and the ranking pool is small enough that a single game moves a "
+        "player several places.\n\n"
+        "The three are stored as separate tables, so a page never mixes them. "
+        "Where a scope has no table — no playoff games of that kind exist yet — "
+        "the page shows no rows rather than regular-season rows under a playoff "
+        "heading. Data QA lists which scoped tables the current build wrote.",
+    )
+
+    ui.note_box(
+        "Playoff games are a different game",
+        "Format aside, the postseason field is a different competitive sample: "
+        "shorter benches, tighter defence, and only the better teams are in it. "
+        "Combining it with 18 regular-season games is defensible for a career "
+        "total and misleading for a rate. Champions Series and the All-Star Game "
+        "are excluded entirely — a different format, and the All-Star Game sits "
+        "mid-season where it would renumber every game after it.",
+    )
 
     ui.note_box(
         "Completed games versus scheduled games",

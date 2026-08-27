@@ -56,6 +56,7 @@ from shared import analysis
 from shared import metrics as M
 from shared import page as P
 from shared import roles
+from shared import segments
 from shared import ui
 from shared.db import query_df, schedule_display_table, table_exists
 
@@ -63,6 +64,12 @@ ctx = P.init_page(
     "Matchup Preview",
     "Two teams side by side — efficiency, form, history and personnel.",
 )
+
+# Whichever segment columns this warehouse build has. They arrive with the
+# postseason ingest, so the game-log queries splice the fragment in rather than
+# naming a column the committed build may not carry yet; shared/ui folds them
+# into one readable column and drops it when every row is a regular-season game.
+seg_cols = segments.select_columns("clean", "team_game_stats")
 
 # ============================================================
 # GAME PICKER
@@ -463,8 +470,9 @@ with tabs[1]:
     ui.section("Game by game",
                "Both teams' completed games this season, with a rolling average.")
     trend = query_df(
-        """
-        SELECT season, game_number, game_date_utc, team_id, team_name,
+        f"""
+        SELECT season, game_number, game_date_utc, {seg_cols}
+               team_id, team_name,
                opponent_team_name, result, scores, scores_against, score_margin,
                shots, shot_pct, ground_balls, turnovers, caused_turnovers,
                saves, save_pct, faceoff_pct, clear_pct, touches, total_passes,

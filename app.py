@@ -17,6 +17,7 @@ import streamlit as st
 from shared import analysis
 from shared import metrics as M
 from shared import page as P
+from shared import segments
 from shared import ui
 from shared.db import query_df, schedule_display_table, startup_counts
 
@@ -41,6 +42,10 @@ counts = startup_counts()
 schedule = schedule_display_table()
 season_schedule = (schedule[schedule["season"] == season].copy()
                    if season is not None else pd.DataFrame())
+# The schedule holds every fixture, playoffs included, while `played` below counts
+# the games in the selected scope — so the denominator has to be narrowed to the
+# same scope or "18 of 23 games played" compares two different seasons.
+season_schedule = segments.filter_frame(season_schedule)
 
 played = 0
 if season is not None:

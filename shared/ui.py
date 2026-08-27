@@ -501,6 +501,38 @@ def make_unique_columns(cols: Iterable[str]) -> list[str]:
     return output
 
 
+def collapse_segment_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Fold `competition_type` + `round_label` into one readable `segment` column.
+
+    Game-grain queries now select both so a mixed table can say which rows are
+    playoff games. Two raw columns reading "post" and "Semifinal" is worse than
+    one reading "Semifinal", and in the default regular-season scope every value
+    is identical — so the column is dropped rather than repeated down the page.
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    present = [c for c in ("competition_type", "round_label") if c in df.columns]
+    if not present or "segment" in df.columns:
+        return df
+
+    from shared import segments as S
+
+    blank = pd.Series([None] * len(df), index=df.index)
+    comp = df["competition_type"] if "competition_type" in df.columns else blank
+    rnd = df["round_label"] if "round_label" in df.columns else blank
+
+    out = df.drop(columns=present)
+    if not any(S.is_postseason_value(v) for v in comp):
+        return out
+
+    labels = [S.segment_display(c, r) for c, r in zip(comp, rnd)]
+    at = min(list(df.columns).index(c) for c in present)
+    at = min(at, len(out.columns))
+    out.insert(at, "segment", labels)
+    return out
+
+
 def prepare_display_df(df: pd.DataFrame, hide_cols=None, date_cols=None,
                        max_cols: int | None = None,
                        clean_schema: bool = False) -> tuple[pd.DataFrame, dict]:
@@ -520,6 +552,7 @@ def prepare_display_df(df: pd.DataFrame, hide_cols=None, date_cols=None,
 
     out = df.copy().reset_index(drop=True)
     out = out.loc[:, ~out.columns.duplicated()].copy()
+    out = collapse_segment_columns(out)
 
     hide = set(DEFAULT_HIDE_COLS)
     if hide_cols:
