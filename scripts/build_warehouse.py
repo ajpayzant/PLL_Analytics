@@ -11,6 +11,7 @@ import json
 import gzip
 import time
 import hashlib
+import traceback
 import datetime as dt
 from pathlib import Path
 from typing import Any, Optional
@@ -125,6 +126,77 @@ print("Run check dir:", RUN_CHECK_DIR)
 # -----------------------------
 TARGET_SEASONS = env_int_list("PLL_TARGET_SEASONS", [2022, 2023, 2024, 2025, 2026])
 COMPETITION_TYPE = os.getenv("PLL_COMPETITION_TYPE", "regular").strip().lower()
+
+# -----------------------------
+# Season segments
+# -----------------------------
+# The PLL API tags every event with a seasonSegment, one of:
+#   regular | post | champseries | allstar
+# The seasonSegment QUERY PARAM is ignored by the API — the probe URLs in
+# fetch_event_list_for_year return identical item counts — so every segment
+# arrives in the payload and the filtering has to happen on our side.
+#
+# We collect "regular" + "post" (the playoff bracket: quarterfinals, semifinals,
+# championship). "champseries" (the February 6v6 Championship Series) and
+# "allstar" stay excluded: different format and rosters, and the All-Star Game
+# sits MID-season, so ingesting it would renumber every regular-season game
+# after it and invalidate stored game_number keys.
+POSTSEASON_COMPETITION_TYPES = {
+    s.strip().lower()
+    for s in os.getenv("PLL_POSTSEASON_TYPES", "post").split(",")
+    if s.strip()
+}
+INCLUDED_COMPETITION_TYPES = {COMPETITION_TYPE} | POSTSEASON_COMPETITION_TYPES
+
+
+def is_included_segment(segment) -> bool:
+    """True for the segments we ingest. A missing segment is NOT included: it
+    cannot be identified as regular vs all-star, and every event observed so far
+    reports one."""
+    if segment is None or (isinstance(segment, float) and pd.isna(segment)):
+        return False
+    return str(segment).strip().lower() in INCLUDED_COMPETITION_TYPES
+
+
+def is_postseason_segment(segment) -> bool:
+    if segment is None or (isinstance(segment, float) and pd.isna(segment)):
+        return False
+    return str(segment).strip().lower() in POSTSEASON_COMPETITION_TYPES
+
+
+def segment_order_rank(segment) -> int:
+    """Sort key that numbers regular-season games before postseason games.
+    Guarantees that adding the playoff bracket never renumbers an existing
+    regular-season game_number (which stat tables and saved exports key on)."""
+    return 1 if is_postseason_segment(segment) else 0
+
+
+# (season, seasonSegment) -> event count, tallied over every event the API returns
+# BEFORE the include filter. Block 10 turns this into a QC row so a brand-new
+# segment value shows up as a warning instead of being silently dropped.
+OBSERVED_SEGMENT_COUNTS = {}
+
+
+def record_observed_segment(year, segment):
+    key = (int(year), "<missing>" if segment is None else str(segment).strip().lower())
+    OBSERVED_SEGMENT_COUNTS[key] = OBSERVED_SEGMENT_COUNTS.get(key, 0) + 1
+
+
+# -----------------------------
+# Segment scopes for the marts
+# -----------------------------
+# Every aggregate mart is built three times, and the table name says which:
+#
+#   <name>            regular season only  — what the tool has always shown
+#   <name>_all        regular season + playoffs
+#   <name>_playoffs   playoffs only
+#
+# The unsuffixed name keeps its old meaning on purpose. A page that has not been
+# taught about scopes therefore keeps showing regular-season numbers: the worst a
+# missed call site can do is ignore the scope control, never silently mix the
+# postseason into a regular-season total.
+SEGMENT_SCOPES = ("regular", "all", "playoffs")
+SCOPE_SUFFIX = {"regular": "", "all": "_all", "playoffs": "_playoffs"}
 
 EXPECTED_REGULAR_GAMES = {
     2022: 40,
@@ -469,7 +541,7 @@ def validate_event_payload(payload, season):
         not pd.isna(year_val)
         and int(year_val) == int(season)
         and event_id
-        and season_segment == COMPETITION_TYPE
+        and is_included_segment(season_segment)
     )
 
     return {
@@ -715,7 +787,12 @@ def fetch_event_list_for_year(year, season_segment=COMPETITION_TYPE):
 
     return best_payload, pd.DataFrame(probe_rows)
 
-def parse_event_list_payload(payload, year, season_segment=COMPETITION_TYPE):
+def parse_event_list_payload(payload, year, season_segment=None):
+    """Parse the event-list payload into a schedule frame.
+
+    season_segment is accepted for call-site compatibility but ignored: the
+    included segments come from INCLUDED_COMPETITION_TYPES (regular + post).
+    """
     items = safe_get(payload, "data", "items", default=[]) if payload else []
     rows = []
 
@@ -733,7 +810,9 @@ def parse_event_list_payload(payload, year, season_segment=COMPETITION_TYPE):
             except Exception:
                 pass
 
-        if item_segment is not None and item_segment != season_segment:
+        record_observed_segment(year, item_segment)
+
+        if not is_included_segment(item_segment):
             continue
 
         slug = item.get("slugname") or item.get("slug") or item.get("eventSlug")
@@ -778,6 +857,13 @@ def parse_event_list_payload(payload, year, season_segment=COMPETITION_TYPE):
             "event_status": event_status,
             "event_status_num": event_status_num,
             "event_status_label": "final" if event_status_num == 3 else ("scheduled" if event_status_num == 0 else "unknown"),
+            # Playoff bracket context. The postseason rows arrive with
+            # homeTeam/awayTeam = null until the seeding is decided, so the round
+            # label is the only human-readable identity a playoff game has.
+            "round_label": item.get("description"),
+            "official_week": to_num_scalar(item.get("week")),
+            "venue": item.get("venue"),
+            "location": item.get("location"),
             "source": "event_list_endpoint",
             "discovery_source": "event_list_endpoint",
         })
@@ -788,7 +874,13 @@ def parse_event_list_payload(payload, year, season_segment=COMPETITION_TYPE):
         return out
 
     out = out.drop_duplicates(subset=["season", "slug"]).copy()
-    out = out.sort_values(["game_date_guess", "event_numeric_id", "slug"], na_position="last").reset_index(drop=True)
+    # Regular season first, postseason after — see segment_order_rank().
+    out["_segment_rank"] = out["competition_type"].map(segment_order_rank)
+    out = out.sort_values(
+        ["_segment_rank", "game_date_guess", "event_numeric_id", "slug"],
+        na_position="last",
+    ).reset_index(drop=True)
+    out = out.drop(columns=["_segment_rank"])
     out["game_number"] = np.arange(1, len(out) + 1)
     out["game_number_guess"] = out["game_number"]
     out["valid"] = True
@@ -1055,7 +1147,15 @@ def build_discovery_inventories():
             & (validated_inventory.get("valid", pd.Series(dtype=bool)) == True)
         ] if len(validated_inventory) > 0 else pd.DataFrame()
 
-        need_fallback = len(current_valid) == 0 or (expected is not None and len(current_valid) < expected)
+        # EXPECTED_REGULAR_GAMES counts the regular season, so the comparison has
+        # to drop the playoff rows. Counting them would let five playoff games
+        # stand in for five missing regular-season ones and skip the fallback.
+        if len(current_valid) > 0 and "competition_type" in current_valid.columns:
+            current_regular = current_valid[~current_valid["competition_type"].map(is_postseason_segment)]
+        else:
+            current_regular = current_valid
+
+        need_fallback = len(current_valid) == 0 or (expected is not None and len(current_regular) < expected)
 
         if not need_fallback:
             continue
@@ -1130,10 +1230,16 @@ def build_discovery_inventories():
         keep="first"
     ).copy()
 
+    # Regular season numbered before postseason, so the playoff bracket appends
+    # rather than shifting existing game_numbers.
+    valid_discovered["_segment_rank"] = valid_discovered["competition_type"].map(segment_order_rank)
+
     valid_discovered = valid_discovered.sort_values(
-        ["season", "game_date_guess", "game_number", "slug"],
+        ["season", "_segment_rank", "game_date_guess", "game_number", "slug"],
         na_position="last"
     ).reset_index(drop=True)
+
+    valid_discovered = valid_discovered.drop(columns=["_segment_rank"])
 
     # Fill game_number by season if missing.
     valid_discovered["game_number"] = pd.to_numeric(valid_discovered["game_number"], errors="coerce")
@@ -1196,10 +1302,14 @@ def build_discovery_inventories():
                 stat_season = pd.DataFrame(columns=discovered_season.columns)
 
         if len(stat_season) > 0:
+            stat_season["_segment_rank"] = stat_season["competition_type"].map(segment_order_rank)
+
             stat_season = stat_season.sort_values(
-                ["game_date_guess", "game_number", "slug"],
+                ["_segment_rank", "game_date_guess", "game_number", "slug"],
                 na_position="last"
             ).copy()
+
+            stat_season = stat_season.drop(columns=["_segment_rank"])
 
             stat_season["game_number"] = np.arange(1, len(stat_season) + 1)
 
@@ -1414,11 +1524,11 @@ for season in TARGET_SEASONS:
 
         season_segment = summary_data.get("seasonSegment")
 
-        if season_segment != COMPETITION_TYPE:
+        if not is_included_segment(season_segment):
             skipped_game_rows.append({
                 "season": season,
                 "slug": slug,
-                "reason": "non_regular_season_segment",
+                "reason": "excluded_season_segment",
                 "season_segment": season_segment,
             })
             continue
@@ -2450,6 +2560,114 @@ print("PLAYER_SUM_COLS:", PLAYER_SUM_COLS)
 print("TEAM_SUM_COLS:", TEAM_SUM_COLS)
 
 # ============================================================
+# BLOCK 6.5 — REGULAR-SEASON / POSTSEASON SPLIT
+# ============================================================
+#
+# From here down, game_manifest / team_game_stats / player_game_stats hold
+# REGULAR-SEASON games only — exactly what they held before the postseason was
+# ingested. Every mart, split and quality check that follows is therefore
+# unchanged, and the tables the pages read today still mean what they meant.
+#
+# The full frames (regular + postseason) are kept as *_all, and BLOCK 10.9 builds
+# the scoped mart variants from them. Directories (players, teams, aliases) are
+# built from the *_all frames, so a man who only ever played a playoff game still
+# has a name.
+
+def attach_round_labels(df, schedule, label=""):
+    """Give game rows the bracket round the schedule knows them by.
+
+    The stats payloads carry the segment ("post") but not the round, and a playoff
+    game log whose every row reads "post" tells a reader nothing. The event list
+    carries `description` ("Semifinal", "Championship"), so it is joined on here,
+    once, before the frames are split and every mart is derived from them.
+    """
+    if df is None or len(df) == 0:
+        return df
+    if "round_label" in getattr(df, "columns", []):
+        return df
+    if schedule is None or len(schedule) == 0:
+        return df
+    if not {"season", "game_id"}.issubset(df.columns):
+        return df
+    if not {"season", "event_id", "round_label"}.issubset(schedule.columns):
+        return df
+
+    lookup = schedule[["season", "event_id", "round_label"]].dropna(subset=["event_id"]).copy()
+    lookup["_key"] = lookup["season"].astype(str) + "|" + lookup["event_id"].astype(str)
+    lookup = lookup.drop_duplicates(subset=["_key"]).set_index("_key")["round_label"]
+
+    out = df.copy()
+    # astype("string") so a season with no labelled game still writes a string
+    # column to parquet rather than an all-null column of no type.
+    out["round_label"] = (
+        out["season"].astype(str) + "|" + out["game_id"].astype(str)
+    ).map(lookup).astype("string")
+    print(f"  {label}: round label attached to "
+          f"{int(out['round_label'].notna().sum())} of {len(out)} rows")
+    return out
+
+
+print("Attaching bracket round labels:")
+game_manifest = attach_round_labels(game_manifest, season_schedule_inventory, "game_manifest")
+team_game_stats = attach_round_labels(team_game_stats, season_schedule_inventory, "team_game_stats")
+player_game_stats = attach_round_labels(player_game_stats, season_schedule_inventory, "player_game_stats")
+
+game_manifest_all = game_manifest.copy()
+team_game_stats_all = team_game_stats.copy()
+player_game_stats_all = player_game_stats.copy()
+
+
+def postseason_mask(df):
+    """Boolean mask of postseason rows, all-False when the frame cannot say."""
+    if df is None or len(df) == 0:
+        return pd.Series([], dtype=bool)
+    if "competition_type" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df["competition_type"].map(is_postseason_segment).astype(bool)
+
+
+def scope_frame(df, scope, label=""):
+    """Cut a game-grain frame down to one segment scope.
+
+    A frame with no competition_type column is returned as-is for "regular" and
+    "all" (that is what it has always meant) and empty for "playoffs", because
+    nothing in it can be shown to be a playoff game.
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    if "competition_type" not in df.columns:
+        if scope == "playoffs":
+            print(f"  {label} [{scope}]: no competition_type column — nothing identifiable as postseason")
+            return df.iloc[0:0].copy()
+        return df
+
+    if scope == "all":
+        return df.reset_index(drop=True)
+
+    is_post = postseason_mask(df)
+    keep = is_post if scope == "playoffs" else ~is_post
+    return df[keep].reset_index(drop=True)
+
+
+def regular_season_only(df, label):
+    """Drop postseason rows, reporting the split. Returns df unchanged if the
+    frame carries no competition_type column (older/fallback shapes)."""
+    if df is None or len(df) == 0 or "competition_type" not in getattr(df, "columns", []):
+        print(f"  {label}: no competition_type column — left as-is")
+        return df
+
+    is_post = postseason_mask(df)
+    print(f"  {label}: {int((~is_post).sum())} regular-season rows, {int(is_post.sum())} postseason rows")
+    return df[~is_post].reset_index(drop=True)
+
+
+print("Splitting regular season from postseason:")
+game_manifest = regular_season_only(game_manifest, "game_manifest")
+team_game_stats = regular_season_only(team_game_stats, "team_game_stats")
+player_game_stats = regular_season_only(player_game_stats, "player_game_stats")
+
+# ============================================================
 # BLOCK 7 — CURATED TABLES, SEASON TOTALS, CAREER TOTALS, SPLITS
 # ============================================================
 
@@ -2589,8 +2807,11 @@ def add_team_rate_columns(df):
 # -----------------------------
 # Team alias mapping
 # -----------------------------
-if len(team_game_stats) > 0:
-    observed_team_id_raw = sorted(set(team_game_stats["team_id_raw"].dropna().astype(str).tolist()))
+# Directories come from the *_all frames: identity is not a segment. A team or a
+# man seen only in a playoff game still needs a name, or the playoffs scope would
+# show rows the app cannot label.
+if len(team_game_stats_all) > 0:
+    observed_team_id_raw = sorted(set(team_game_stats_all["team_id_raw"].dropna().astype(str).tolist()))
 else:
     observed_team_id_raw = []
 
@@ -2609,8 +2830,8 @@ team_alias_mapping = team_alias_mapping.drop_duplicates().sort_values(["team_id"
 # -----------------------------
 # Team directory
 # -----------------------------
-if len(team_game_stats) > 0:
-    observed_canonical_team_ids = sorted(set(team_game_stats["team_id"].dropna().astype(str).tolist()))
+if len(team_game_stats_all) > 0:
+    observed_canonical_team_ids = sorted(set(team_game_stats_all["team_id"].dropna().astype(str).tolist()))
 else:
     observed_canonical_team_ids = []
 
@@ -2625,9 +2846,9 @@ team_directory = team_directory.drop_duplicates().sort_values("team_id").reset_i
 # -----------------------------
 # Player directory
 # -----------------------------
-if len(player_game_stats) > 0:
+if len(player_game_stats_all) > 0:
     player_directory = (
-        player_game_stats
+        player_game_stats_all
         .sort_values(["season", "game_number", "game_id"])
         .groupby("player_id", dropna=False)
         .agg({
@@ -2657,11 +2878,19 @@ else:
     player_directory = pd.DataFrame()
 
 # -----------------------------
-# Player season by team
+# Player totals
 # -----------------------------
-if len(player_game_stats) > 0:
-    player_season_stats_by_team = (
-        player_game_stats
+# Each total is a function of the game rows handed to it, so BLOCK 10.9 can build
+# the same table again over a different segment scope without a second copy of the
+# arithmetic. The regular-season call sites below are the ones that keep the
+# unsuffixed table names.
+
+def build_player_season_stats_by_team(player_games):
+    if player_games is None or len(player_games) == 0:
+        return pd.DataFrame()
+
+    out = (
+        player_games
         .groupby(["season", "player_id", "full_name", "team_id", "team_name"], dropna=False)
         .agg(
             games=("game_id", "nunique"),
@@ -2673,71 +2902,73 @@ if len(player_game_stats) > 0:
         )
         .reset_index()
     )
-    player_season_stats_by_team = add_player_rate_columns(player_season_stats_by_team)
-else:
-    player_season_stats_by_team = pd.DataFrame()
 
-# -----------------------------
-# Player season, one row per player-season
-# -----------------------------
-player_season_rows = []
+    return add_player_rate_columns(out)
 
-if len(player_game_stats) > 0:
-    for keys, g in player_game_stats.groupby(["season", "player_id"], dropna=False):
-        season, player_id = keys
 
-        row = {
-            "season": season,
-            "player_id": player_id,
-            "full_name": latest_non_null_by_game(g, "full_name"),
-            "first_name": latest_non_null_by_game(g, "first_name"),
-            "last_name": latest_non_null_by_game(g, "last_name"),
-            "position": mode_or_first(g["position"]) if "position" in g.columns else pd.NA,
-            "position_name": mode_or_first(g["position_name"]) if "position_name" in g.columns else pd.NA,
-            "games": g["game_id"].nunique(),
-            "teams": "|".join(sorted(set([str(x) for x in g["team_id"].dropna()]))),
-            "team_names": "|".join(sorted(set([str(x) for x in g["team_name"].dropna()]))),
-            "first_game_date": g["game_date_utc"].min(),
-            "last_game_date": g["game_date_utc"].max(),
-        }
+def build_player_season_stats(player_games):
+    player_season_rows = []
 
-        for c in PLAYER_SUM_COLS:
-            row[c] = pd.to_numeric(g[c], errors="coerce").sum()
+    if player_games is not None and len(player_games) > 0:
+        for keys, g in player_games.groupby(["season", "player_id"], dropna=False):
+            season, player_id = keys
 
-        player_season_rows.append(row)
+            row = {
+                "season": season,
+                "player_id": player_id,
+                "full_name": latest_non_null_by_game(g, "full_name"),
+                "first_name": latest_non_null_by_game(g, "first_name"),
+                "last_name": latest_non_null_by_game(g, "last_name"),
+                "position": mode_or_first(g["position"]) if "position" in g.columns else pd.NA,
+                "position_name": mode_or_first(g["position_name"]) if "position_name" in g.columns else pd.NA,
+                "games": g["game_id"].nunique(),
+                "teams": "|".join(sorted(set([str(x) for x in g["team_id"].dropna()]))),
+                "team_names": "|".join(sorted(set([str(x) for x in g["team_name"].dropna()]))),
+                "first_game_date": g["game_date_utc"].min(),
+                "last_game_date": g["game_date_utc"].max(),
+            }
 
-player_season_stats = pd.DataFrame(player_season_rows)
-player_season_stats = add_player_rate_columns(player_season_stats) if len(player_season_stats) > 0 else player_season_stats
+            for c in PLAYER_SUM_COLS:
+                row[c] = pd.to_numeric(g[c], errors="coerce").sum()
 
-# -----------------------------
-# Player career, one row per player
-# -----------------------------
-player_career_rows = []
+            player_season_rows.append(row)
 
-if len(player_game_stats) > 0:
-    for player_id, g in player_game_stats.groupby("player_id", dropna=False):
-        row = {
-            "player_id": player_id,
-            "full_name": latest_non_null_by_game(g, "full_name"),
-            "first_name": latest_non_null_by_game(g, "first_name"),
-            "last_name": latest_non_null_by_game(g, "last_name"),
-            "position": mode_or_first(g["position"]) if "position" in g.columns else pd.NA,
-            "position_name": mode_or_first(g["position_name"]) if "position_name" in g.columns else pd.NA,
-            "games": g["game_id"].nunique(),
-            "seasons": g["season"].nunique(),
-            "teams": "|".join(sorted(set([str(x) for x in g["team_id"].dropna()]))),
-            "team_names": "|".join(sorted(set([str(x) for x in g["team_name"].dropna()]))),
-            "first_game_date": g["game_date_utc"].min(),
-            "last_game_date": g["game_date_utc"].max(),
-        }
+    out = pd.DataFrame(player_season_rows)
+    return add_player_rate_columns(out) if len(out) > 0 else out
 
-        for c in PLAYER_SUM_COLS:
-            row[c] = pd.to_numeric(g[c], errors="coerce").sum()
 
-        player_career_rows.append(row)
+def build_player_career_stats(player_games):
+    player_career_rows = []
 
-player_career_stats = pd.DataFrame(player_career_rows)
-player_career_stats = add_player_rate_columns(player_career_stats) if len(player_career_stats) > 0 else player_career_stats
+    if player_games is not None and len(player_games) > 0:
+        for player_id, g in player_games.groupby("player_id", dropna=False):
+            row = {
+                "player_id": player_id,
+                "full_name": latest_non_null_by_game(g, "full_name"),
+                "first_name": latest_non_null_by_game(g, "first_name"),
+                "last_name": latest_non_null_by_game(g, "last_name"),
+                "position": mode_or_first(g["position"]) if "position" in g.columns else pd.NA,
+                "position_name": mode_or_first(g["position_name"]) if "position_name" in g.columns else pd.NA,
+                "games": g["game_id"].nunique(),
+                "seasons": g["season"].nunique(),
+                "teams": "|".join(sorted(set([str(x) for x in g["team_id"].dropna()]))),
+                "team_names": "|".join(sorted(set([str(x) for x in g["team_name"].dropna()]))),
+                "first_game_date": g["game_date_utc"].min(),
+                "last_game_date": g["game_date_utc"].max(),
+            }
+
+            for c in PLAYER_SUM_COLS:
+                row[c] = pd.to_numeric(g[c], errors="coerce").sum()
+
+            player_career_rows.append(row)
+
+    out = pd.DataFrame(player_career_rows)
+    return add_player_rate_columns(out) if len(out) > 0 else out
+
+
+player_season_stats_by_team = build_player_season_stats_by_team(player_game_stats)
+player_season_stats = build_player_season_stats(player_game_stats)
+player_career_stats = build_player_career_stats(player_game_stats)
 
 # -----------------------------
 # Score-based team game results
@@ -2828,58 +3059,42 @@ if len(team_game_stats) > 0:
 
 
 # -----------------------------
-# Team season
+# Team totals
 # -----------------------------
-if len(team_game_stats) > 0:
-    team_season_stats = (
-        team_game_stats
-        .groupby(["season", "team_id", "team_name"], dropna=False)
-        .agg(
-            games=("game_id", "nunique"),
-            wins=("win_flag", "sum"),
-            losses=("loss_flag", "sum"),
-            ties=("tie_flag", "sum"),
-            score_margin=("score_margin", "sum"),
-            first_game_date=("game_date_utc", "min"),
-            last_game_date=("game_date_utc", "max"),
-            **{c: (c, "sum") for c in TEAM_SUM_COLS}
-        )
-        .reset_index()
-    )
-
-    team_season_stats["win_pct"] = np.where(
-        team_season_stats["games"] > 0,
-        team_season_stats["wins"] / team_season_stats["games"],
+def _finish_team_totals(out):
+    """Record rates and per-game columns shared by every team aggregation."""
+    out["win_pct"] = np.where(
+        out["games"] > 0,
+        out["wins"] / out["games"],
         np.nan
     )
 
-    team_season_stats["score_margin_per_game"] = np.where(
-        team_season_stats["games"] > 0,
-        team_season_stats["score_margin"] / team_season_stats["games"],
+    out["score_margin_per_game"] = np.where(
+        out["games"] > 0,
+        out["score_margin"] / out["games"],
         np.nan
     )
 
-    team_season_stats = add_team_rate_columns(team_season_stats)
+    out = add_team_rate_columns(out)
 
     # Keep record fields in a clean numeric format.
     for c in ["wins", "losses", "ties"]:
-        if c in team_season_stats.columns:
-            team_season_stats[c] = pd.to_numeric(team_season_stats[c], errors="coerce")
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
 
-else:
-    team_season_stats = pd.DataFrame()
+    return out
 
 
-# -----------------------------
-# Team career/franchise
-# -----------------------------
-if len(team_game_stats) > 0:
-    team_career_stats = (
-        team_game_stats
-        .groupby(["team_id", "team_name"], dropna=False)
+def _team_totals(team_games, group_cols, extra_aggs=None):
+    if team_games is None or len(team_games) == 0:
+        return pd.DataFrame()
+
+    out = (
+        team_games
+        .groupby(group_cols, dropna=False)
         .agg(
             games=("game_id", "nunique"),
-            seasons=("season", "nunique"),
+            **(extra_aggs or {}),
             wins=("win_flag", "sum"),
             losses=("loss_flag", "sum"),
             ties=("tie_flag", "sum"),
@@ -2891,34 +3106,34 @@ if len(team_game_stats) > 0:
         .reset_index()
     )
 
-    team_career_stats["win_pct"] = np.where(
-        team_career_stats["games"] > 0,
-        team_career_stats["wins"] / team_career_stats["games"],
-        np.nan
+    return _finish_team_totals(out)
+
+
+def build_team_season_stats(team_games):
+    return _team_totals(team_games, ["season", "team_id", "team_name"])
+
+
+def build_team_career_stats(team_games):
+    return _team_totals(
+        team_games,
+        ["team_id", "team_name"],
+        {"seasons": ("season", "nunique")},
     )
 
-    team_career_stats["score_margin_per_game"] = np.where(
-        team_career_stats["games"] > 0,
-        team_career_stats["score_margin"] / team_career_stats["games"],
-        np.nan
+
+def build_team_vs_opponent_stats(team_games):
+    return _team_totals(
+        team_games,
+        ["team_id", "team_name", "opponent_team_id", "opponent_team_name"],
     )
 
-    team_career_stats = add_team_rate_columns(team_career_stats)
 
-    for c in ["wins", "losses", "ties"]:
-        if c in team_career_stats.columns:
-            team_career_stats[c] = pd.to_numeric(team_career_stats[c], errors="coerce")
+def build_player_vs_opponent_stats(player_games):
+    if player_games is None or len(player_games) == 0:
+        return pd.DataFrame()
 
-else:
-    team_career_stats = pd.DataFrame()
-
-
-# -----------------------------
-# Opponent splits
-# -----------------------------
-if len(player_game_stats) > 0:
-    player_vs_opponent_stats = (
-        player_game_stats
+    out = (
+        player_games
         .groupby(["player_id", "full_name", "opponent_team_id", "opponent_team_name"], dropna=False)
         .agg(
             games=("game_id", "nunique"),
@@ -2931,45 +3146,13 @@ if len(player_game_stats) > 0:
         .reset_index()
     )
 
-    player_vs_opponent_stats = add_player_rate_columns(player_vs_opponent_stats)
-
-else:
-    player_vs_opponent_stats = pd.DataFrame()
+    return add_player_rate_columns(out)
 
 
-if len(team_game_stats) > 0:
-    team_vs_opponent_stats = (
-        team_game_stats
-        .groupby(["team_id", "team_name", "opponent_team_id", "opponent_team_name"], dropna=False)
-        .agg(
-            games=("game_id", "nunique"),
-            wins=("win_flag", "sum"),
-            losses=("loss_flag", "sum"),
-            ties=("tie_flag", "sum"),
-            score_margin=("score_margin", "sum"),
-            first_game_date=("game_date_utc", "min"),
-            last_game_date=("game_date_utc", "max"),
-            **{c: (c, "sum") for c in TEAM_SUM_COLS}
-        )
-        .reset_index()
-    )
-
-    team_vs_opponent_stats["win_pct"] = np.where(
-        team_vs_opponent_stats["games"] > 0,
-        team_vs_opponent_stats["wins"] / team_vs_opponent_stats["games"],
-        np.nan
-    )
-
-    team_vs_opponent_stats["score_margin_per_game"] = np.where(
-        team_vs_opponent_stats["games"] > 0,
-        team_vs_opponent_stats["score_margin"] / team_vs_opponent_stats["games"],
-        np.nan
-    )
-
-    team_vs_opponent_stats = add_team_rate_columns(team_vs_opponent_stats)
-
-else:
-    team_vs_opponent_stats = pd.DataFrame()
+team_season_stats = build_team_season_stats(team_game_stats)
+team_career_stats = build_team_career_stats(team_game_stats)
+player_vs_opponent_stats = build_player_vs_opponent_stats(player_game_stats)
+team_vs_opponent_stats = build_team_vs_opponent_stats(team_game_stats)
 
 
 print("Curated base tables created.")
@@ -3138,6 +3321,11 @@ def build_clean_schedule_table(schedule_inventory):
         "slug",
         "event_id",
         "event_numeric_id",
+        "competition_type",
+        "round_label",
+        "official_week",
+        "venue",
+        "location",
         "game_date_guess",
         "away_team_id_raw",
         "away_team_name_raw",
@@ -3189,6 +3377,52 @@ def add_qc_check(check_name, status, actual=None, expected=None, notes=None):
         "notes": notes,
     })
 
+# ------------------------------------------------------------
+# Season-segment inventory.
+# game_manifest / team_game_stats / player_game_stats are REGULAR-SEASON ONLY at
+# this point (see BLOCK 6.5), so every count check below is regular-only by
+# construction. These rows make the segment split — and any segment value we have
+# not seen before — visible instead of silently dropped.
+# ------------------------------------------------------------
+_known_segments = INCLUDED_COMPETITION_TYPES | {"champseries", "allstar"}
+_unknown_segments = sorted(
+    {seg for (_season, seg) in OBSERVED_SEGMENT_COUNTS if seg not in _known_segments}
+)
+
+add_qc_check(
+    "unknown_season_segments",
+    "pass" if not _unknown_segments else "warning",
+    ", ".join(_unknown_segments) if _unknown_segments else 0,
+    0,
+    "seasonSegment values the pipeline has no rule for. Decide include/exclude in "
+    "INCLUDED_COMPETITION_TYPES before trusting the schedule.",
+)
+
+for (_season, _seg), _n in sorted(OBSERVED_SEGMENT_COUNTS.items()):
+    if _seg in INCLUDED_COMPETITION_TYPES:
+        _note = "Ingested."
+    elif _seg in _known_segments:
+        _note = "Excluded by design (different format / mid-season event)."
+    else:
+        _note = "UNKNOWN segment — excluded by default."
+    add_qc_check(f"season_segment_events_{_season}_{_seg}", "info", _n, None, _note)
+
+if len(game_manifest_all) > 0 and "competition_type" in game_manifest_all.columns:
+    _post_manifest = game_manifest_all[postseason_mask(game_manifest_all)]
+    add_qc_check(
+        "postseason_games_with_stats",
+        "info",
+        int(_post_manifest["game_id"].nunique()),
+        None,
+        "Completed postseason games behind the Playoffs and Both scopes.",
+    )
+    if len(_post_manifest) > 0:
+        for _s, _n in sorted(_post_manifest.groupby("season")["game_id"].nunique().items()):
+            add_qc_check(
+                f"postseason_games_with_stats_{int(_s)}", "info", int(_n), None,
+                "Completed postseason games in this season."
+            )
+
 add_qc_check("game_manifest_rows", "info", len(game_manifest), None, "Number of completed/stat-available regular-season games parsed.")
 add_qc_check("team_game_stats_rows", "info", len(team_game_stats), None, "Should usually be 2x game_manifest rows.")
 add_qc_check("player_game_stats_rows", "info", len(player_game_stats), None, "One row per player-game.")
@@ -3234,6 +3468,18 @@ if len(season_schedule_inventory) > 0:
             None,
             "Full schedule count, including scheduled/future games."
         )
+
+    if "competition_type" in season_schedule_inventory.columns:
+        post_sched = season_schedule_inventory[postseason_mask(season_schedule_inventory)]
+        for season, grp in post_sched.groupby("season"):
+            add_qc_check(
+                f"postseason_schedule_count_{int(season)}",
+                "info",
+                int(grp["slug"].nunique()),
+                None,
+                "Playoff bracket games on the schedule, including future ones "
+                "(teams are null until seeding is decided).",
+            )
 
 # Team rows per game.
 if len(team_game_stats) > 0:
@@ -5493,23 +5739,33 @@ def _build_player_ranking_context(df, context_type, context_label, sort_order):
     return out.sort_values(["ranking_sort_order", "overall_rank", "full_name"], na_position="last").reset_index(drop=True)
 
 
-ranking_contexts = []
+def build_player_ranking_profiles(career_stats, last10_stats, last5_stats, season_stats):
+    """Every ranking context stacked into one mart. Called once per segment scope."""
+    ranking_contexts = []
 
-if "player_career_stats" in globals() and len(player_career_stats) > 0:
-    ranking_contexts.append(_build_player_ranking_context(player_career_stats, "Career", "Career", 0))
+    if career_stats is not None and len(career_stats) > 0:
+        ranking_contexts.append(_build_player_ranking_context(career_stats, "Career", "Career", 0))
 
-if "player_last10_stats" in globals() and len(player_last10_stats) > 0:
-    ranking_contexts.append(_build_player_ranking_context(player_last10_stats, "Last 10", "Last 10", 1))
+    if last10_stats is not None and len(last10_stats) > 0:
+        ranking_contexts.append(_build_player_ranking_context(last10_stats, "Last 10", "Last 10", 1))
 
-if "player_last5_stats" in globals() and len(player_last5_stats) > 0:
-    ranking_contexts.append(_build_player_ranking_context(player_last5_stats, "Last 5", "Last 5", 2))
+    if last5_stats is not None and len(last5_stats) > 0:
+        ranking_contexts.append(_build_player_ranking_context(last5_stats, "Last 5", "Last 5", 2))
 
-if "player_season_stats" in globals() and len(player_season_stats) > 0 and "season" in player_season_stats.columns:
-    for i, season in enumerate(sorted(pd.to_numeric(player_season_stats["season"], errors="coerce").dropna().astype(int).unique())):
-        sdf = player_season_stats[pd.to_numeric(player_season_stats["season"], errors="coerce").eq(season)].copy()
-        ranking_contexts.append(_build_player_ranking_context(sdf, "Season", f"{season} Season", 100 + i))
+    if season_stats is not None and len(season_stats) > 0 and "season" in season_stats.columns:
+        for i, season in enumerate(sorted(pd.to_numeric(season_stats["season"], errors="coerce").dropna().astype(int).unique())):
+            sdf = season_stats[pd.to_numeric(season_stats["season"], errors="coerce").eq(season)].copy()
+            ranking_contexts.append(_build_player_ranking_context(sdf, "Season", f"{season} Season", 100 + i))
 
-player_ranking_profiles = pd.concat(ranking_contexts, ignore_index=True, sort=False) if ranking_contexts else pd.DataFrame()
+    return pd.concat(ranking_contexts, ignore_index=True, sort=False) if ranking_contexts else pd.DataFrame()
+
+
+player_ranking_profiles = build_player_ranking_profiles(
+    player_career_stats if "player_career_stats" in globals() else pd.DataFrame(),
+    player_last10_stats if "player_last10_stats" in globals() else pd.DataFrame(),
+    player_last5_stats if "player_last5_stats" in globals() else pd.DataFrame(),
+    player_season_stats if "player_season_stats" in globals() else pd.DataFrame(),
+)
 
 
 def _build_team_style_context(team_stats, defense_stats, context_type, context_label, sort_order):
@@ -5653,24 +5909,211 @@ def _build_team_style_context(team_stats, defense_stats, context_type, context_l
     return teams.sort_values(["profile_sort_order", "profile_rank"], na_position="last").reset_index(drop=True)
 
 
-style_contexts = []
-if "team_career_stats" in globals() and len(team_career_stats) > 0:
-    style_contexts.append(_build_team_style_context(team_career_stats, team_defense_career_stats if "team_defense_career_stats" in globals() else pd.DataFrame(), "Career", "Career", 0))
-if "team_season_stats" in globals() and len(team_season_stats) > 0 and "season" in team_season_stats.columns:
-    for i, season in enumerate(sorted(pd.to_numeric(team_season_stats["season"], errors="coerce").dropna().astype(int).unique())):
-        sdf = team_season_stats[pd.to_numeric(team_season_stats["season"], errors="coerce").eq(season)].copy()
-        if "team_defense_season_stats" in globals() and len(team_defense_season_stats) > 0 and "season" in team_defense_season_stats.columns:
-            ddf = team_defense_season_stats[pd.to_numeric(team_defense_season_stats["season"], errors="coerce").eq(season)].copy()
-        else:
-            ddf = pd.DataFrame()
-        style_contexts.append(_build_team_style_context(sdf, ddf, "Season", f"{season} Season", 100 + i))
+def build_team_style_profiles(season_stats, career_stats, defense_season_stats, defense_career_stats):
+    """Every style context stacked into one mart. Called once per segment scope."""
+    style_contexts = []
 
-team_style_profiles = pd.concat(style_contexts, ignore_index=True, sort=False) if style_contexts else pd.DataFrame()
+    if career_stats is not None and len(career_stats) > 0:
+        style_contexts.append(_build_team_style_context(
+            career_stats,
+            defense_career_stats if defense_career_stats is not None else pd.DataFrame(),
+            "Career", "Career", 0,
+        ))
+
+    if season_stats is not None and len(season_stats) > 0 and "season" in season_stats.columns:
+        for i, season in enumerate(sorted(pd.to_numeric(season_stats["season"], errors="coerce").dropna().astype(int).unique())):
+            sdf = season_stats[pd.to_numeric(season_stats["season"], errors="coerce").eq(season)].copy()
+            if (defense_season_stats is not None and len(defense_season_stats) > 0
+                    and "season" in defense_season_stats.columns):
+                ddf = defense_season_stats[pd.to_numeric(defense_season_stats["season"], errors="coerce").eq(season)].copy()
+            else:
+                ddf = pd.DataFrame()
+            style_contexts.append(_build_team_style_context(sdf, ddf, "Season", f"{season} Season", 100 + i))
+
+    return pd.concat(style_contexts, ignore_index=True, sort=False) if style_contexts else pd.DataFrame()
+
+
+team_style_profiles = build_team_style_profiles(
+    team_season_stats if "team_season_stats" in globals() else pd.DataFrame(),
+    team_career_stats if "team_career_stats" in globals() else pd.DataFrame(),
+    team_defense_season_stats if "team_defense_season_stats" in globals() else pd.DataFrame(),
+    team_defense_career_stats if "team_defense_career_stats" in globals() else pd.DataFrame(),
+)
 
 print("Player ranking and team style profile marts created.")
 print("player_ranking_profiles:", player_ranking_profiles.shape)
 print("team_style_profiles:", team_style_profiles.shape)
 
+
+# ============================================================
+# BLOCK 10.9 — SEGMENT-SCOPED MART VARIANTS
+# ============================================================
+#
+# Everything above this line is the regular season, under the table names the app
+# has always read. This block builds the same tables twice more from the *_all game
+# rows — once with the playoffs added (_all) and once with the playoffs alone
+# (_playoffs) — so a page can offer Regular season / Playoffs / Both without any
+# page having to re-aggregate game rows itself.
+#
+# Two deliberate properties:
+#
+#   * Nothing above depends on what happens here. Each variant is built inside a
+#     try/except, and a variant that raises is reported and dropped: the warehouse
+#     still builds, and the regular-season tables are untouched.
+#   * A variant that is missing is not registered at all, rather than registered as
+#     an empty placeholder. The app tests for the table and falls back to the
+#     regular-season one, so a half-built warehouse shows old numbers instead of a
+#     broken page.
+
+SEGMENT_CLEAN_NAMES = ("game_manifest", "team_game_stats", "player_game_stats")
+
+SEGMENT_MART_NAMES = (
+    "player_season_stats_by_team",
+    "player_season_stats",
+    "player_career_stats",
+    "player_vs_opponent_stats",
+    "player_last5_stats",
+    "player_last10_stats",
+    "player_season_last5_stats",
+    "player_season_last10_stats",
+    "player_ranking_profiles",
+    "team_season_stats",
+    "team_career_stats",
+    "team_vs_opponent_stats",
+    "team_last5_stats",
+    "team_last10_stats",
+    "team_season_last5_stats",
+    "team_season_last10_stats",
+    "team_style_profiles",
+    "team_game_opponent_context",
+    "team_defense_season_stats",
+    "team_defense_career_stats",
+)
+
+
+def build_scoped_tables(player_games, team_games, manifest):
+    """Every scoped table for one segment scope, from that scope's game rows.
+
+    The team frame arrives without the score-based result flags (they are added in
+    BLOCK 7, after the *_all copies were taken), so they are added here before
+    anything counts a win.
+    """
+    tgs = (
+        add_score_based_team_result_flags(team_games)
+        if team_games is not None and len(team_games) > 0
+        else pd.DataFrame()
+    )
+    pgs = player_games if player_games is not None else pd.DataFrame()
+
+    out = {
+        "game_manifest": manifest if manifest is not None else pd.DataFrame(),
+        "team_game_stats": tgs,
+        "player_game_stats": pgs,
+    }
+
+    out["player_season_stats_by_team"] = build_player_season_stats_by_team(pgs)
+    out["player_season_stats"] = build_player_season_stats(pgs)
+    out["player_career_stats"] = build_player_career_stats(pgs)
+    out["player_vs_opponent_stats"] = build_player_vs_opponent_stats(pgs)
+
+    out["player_last5_stats"] = build_player_last_n_stats(pgs, n=5, by_season=False)
+    out["player_last10_stats"] = build_player_last_n_stats(pgs, n=10, by_season=False)
+    out["player_season_last5_stats"] = build_player_last_n_stats(pgs, n=5, by_season=True)
+    out["player_season_last10_stats"] = build_player_last_n_stats(pgs, n=10, by_season=True)
+
+    out["team_season_stats"] = build_team_season_stats(tgs)
+    out["team_career_stats"] = build_team_career_stats(tgs)
+    out["team_vs_opponent_stats"] = build_team_vs_opponent_stats(tgs)
+
+    out["team_last5_stats"] = build_team_last_n_stats(tgs, n=5, by_season=False)
+    out["team_last10_stats"] = build_team_last_n_stats(tgs, n=10, by_season=False)
+    out["team_season_last5_stats"] = build_team_last_n_stats(tgs, n=5, by_season=True)
+    out["team_season_last10_stats"] = build_team_last_n_stats(tgs, n=10, by_season=True)
+
+    context = build_team_game_opponent_context(tgs)
+    out["team_game_opponent_context"] = context
+    out["team_defense_season_stats"] = build_team_defense_agg(context, ["season", "team_id", "team_name"])
+    out["team_defense_career_stats"] = build_team_defense_agg(context, ["team_id", "team_name"])
+
+    out["player_ranking_profiles"] = build_player_ranking_profiles(
+        out["player_career_stats"],
+        out["player_last10_stats"],
+        out["player_last5_stats"],
+        out["player_season_stats"],
+    )
+
+    out["team_style_profiles"] = build_team_style_profiles(
+        out["team_season_stats"],
+        out["team_career_stats"],
+        out["team_defense_season_stats"],
+        out["team_defense_career_stats"],
+    )
+
+    return out
+
+
+# scope -> the suffixed names actually built, so BLOCK 11 registers only real tables.
+SEGMENT_VARIANTS_BUILT = {}
+
+for _scope in SEGMENT_SCOPES:
+    if _scope == "regular":
+        continue   # already built above, under the unsuffixed names
+
+    _suffix = SCOPE_SUFFIX[_scope]
+    print(f"\nBuilding '{_scope}' mart variants (suffix '{_suffix}'):")
+
+    try:
+        _pgs = scope_frame(player_game_stats_all, _scope, "player_game_stats")
+        _tgs = scope_frame(team_game_stats_all, _scope, "team_game_stats")
+        _gm = scope_frame(game_manifest_all, _scope, "game_manifest")
+
+        print(f"  game rows: {len(_pgs)} player, {len(_tgs)} team, {len(_gm)} games")
+
+        if len(_pgs) == 0 and len(_tgs) == 0:
+            print(f"  nothing in scope '{_scope}' — no variants built")
+            continue
+
+        _built = build_scoped_tables(_pgs, _tgs, _gm)
+
+        _names = []
+        for _base, _frame in _built.items():
+            if not isinstance(_frame, pd.DataFrame) or len(_frame) == 0:
+                print(f"  skipped {_base}{_suffix}: empty")
+                continue
+            globals()[_base + _suffix] = _frame
+            _names.append(_base)
+
+        SEGMENT_VARIANTS_BUILT[_scope] = _names
+        print(f"  built {len(_names)} tables for scope '{_scope}'")
+
+    except Exception as _e:
+        print(f"  FAILED building '{_scope}' variants — regular-season tables unaffected: {_e}")
+        traceback.print_exc()
+
+
+# Report the variants in the same quality summary the Data QA page reads, so a scope
+# that quietly failed to build is visible there rather than only in the CI log.
+_segment_qc_rows = []
+
+for _scope in SEGMENT_SCOPES:
+    if _scope == "regular":
+        continue
+    _expected = len(SEGMENT_CLEAN_NAMES) + len(SEGMENT_MART_NAMES)
+    _actual = len(SEGMENT_VARIANTS_BUILT.get(_scope, []))
+    _segment_qc_rows.append({
+        "check_name": f"segment_scope_tables_{_scope}",
+        "status": "pass" if _actual == _expected else ("warning" if _actual else "fail"),
+        "actual": _actual,
+        "expected": _expected,
+        "notes": f"Tables built for the '{_scope}' scope (suffix '{SCOPE_SUFFIX[_scope]}'). "
+                 "Any shortfall means the app falls back to regular-season numbers for those.",
+    })
+
+if _segment_qc_rows and "quality_summary" in globals() and isinstance(quality_summary, pd.DataFrame):
+    quality_summary = pd.concat(
+        [quality_summary, pd.DataFrame(_segment_qc_rows)], ignore_index=True
+    )
+    quality_summary.to_csv(RUN_CHECK_DIR / "quality_summary.csv", index=False)
 
 
 # ============================================================
@@ -5906,6 +6349,31 @@ curated_tables = {
 }
 
 
+# ------------------------------------------------------------
+# Segment-scoped variants (BLOCK 10.9)
+# ------------------------------------------------------------
+# Registered from what was actually built, so a variant that failed is absent from
+# the warehouse rather than present and empty. SEGMENT_SCOPED_TABLES records the
+# schema each one belongs in, and the DuckDB load lists below read it: the bug this
+# avoids is a table written to parquet and never loaded, which reads as a missing
+# table in the app with no error anywhere.
+SEGMENT_SCOPED_TABLES = {"clean": [], "marts": []}
+
+for _scope, _built_names in SEGMENT_VARIANTS_BUILT.items():
+    _suffix = SCOPE_SUFFIX[_scope]
+    for _base in _built_names:
+        _name = _base + _suffix
+        if _name not in globals():
+            continue
+        curated_tables[_name] = globals()[_name]
+        _schema = "clean" if _base in SEGMENT_CLEAN_NAMES else "marts"
+        SEGMENT_SCOPED_TABLES[_schema].append(_name)
+
+print("Segment-scoped tables registered:",
+      len(SEGMENT_SCOPED_TABLES["clean"]), "clean,",
+      len(SEGMENT_SCOPED_TABLES["marts"]), "marts")
+
+
 # ============================================================
 # SAVE CURATED TABLES TO PARQUET + CSV
 # ============================================================
@@ -5973,7 +6441,7 @@ clean_table_names = [
     "player_directory",
     "game_schedule_all",
     "game_schedule_2026",
-]
+] + SEGMENT_SCOPED_TABLES["clean"]
 
 
 # ------------------------------------------------------------
@@ -6009,7 +6477,7 @@ mart_table_names = [
     "team_game_opponent_context",
     "team_defense_season_stats",
     "team_defense_career_stats",
-]
+] + SEGMENT_SCOPED_TABLES["marts"]
 
 
 # ------------------------------------------------------------
