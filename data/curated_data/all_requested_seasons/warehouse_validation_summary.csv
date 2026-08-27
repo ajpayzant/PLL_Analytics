@@ -5,8 +5,8 @@ clean.player_game_stats,7533,ok
 marts.team_season_stats,40,ok
 marts.team_defense_season_stats,40,ok
 marts.team_game_opponent_context,416,ok
-marts.team_game_possession_quality,416,ok
+marts.team_game_possession_quality,460,ok
 marts.player_ranking_profiles,2239,ok
 marts.team_style_profiles,48,ok
-qc.game_possession_quality,208,ok
+qc.game_possession_quality,230,ok
 qc.defensive_opponent_build_quality,9,ok
