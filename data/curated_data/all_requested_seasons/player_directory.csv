@@ -24,6 +24,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 002017,Arden Cohen,Arden,Cohen,arden cohen,arden-cohen,https://img.premierlacrosseleague.com/Players/2026/arden-cohen.webp,D,Defense,40,RED,Redwoods,42,5
 002024,Asher Nolting,Asher,Nolting,asher nolting,asher-nolting,https://img.premierlacrosseleague.com/Players/2026/asher-nolting.webp,A,Attack,32,CAN,Cannons,44,5
 000815,Austin Kaut,Austin,Kaut,austin kaut,austin-kaut,https://img.premierlacrosseleague.com/Players/2026/austin-kaut.webp,G,Goalie,14,CHA,Chaos,13,4
+000256,Austin Staats,Austin,Staats,austin staats,austin-staats,https://img.premierlacrosseleague.com/Players/2022/austin-staats.png?v=1,,,,CHA,Chaos,2,1
 003059,BJ Farrare,BJ,Farrare,bj farrare,bj-farrare,https://img.premierlacrosseleague.com/Players/2026/bj-farrare.webp,LSM,Long Stick Midfield,70,RED,Redwoods,25,3
 003087,Beau Pederson,Beau,Pederson,beau pederson,beau-pederson,https://img.premierlacrosseleague.com/Players/2026/beau-pederson.webp,SSDM,Defensive Midfield,89,ARC,Archers,34,3
 003184,Ben Ramsey,Ben,Ramsey,ben ramsey,ben-ramsey,https://img.premierlacrosseleague.com/Players/2026/ben-ramsey.webp,SSDM,Defensive Midfield,24,CAN,Cannons,22,2
@@ -59,7 +60,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 001417,Bryce Wasserman,Bryce,Wasserman,bryce wasserman,bryce-wasserman,https://img.premierlacrosseleague.com/Players/2022/bryce-wasserman.jpg?v=1,A,Attack,27,CHA,Chaos,2,1
 000337,Bryce Young,Bryce,Young,bryce young,bryce-young,https://img.premierlacrosseleague.com/Players/2025/bryce-young.png?v=3,D,Defense,41,CAN|WHP,Cannons|Whipsnakes,43,4
 002025,Bubba Fairman,Bubba,Fairman,bubba fairman,bubba-fairman,https://img.premierlacrosseleague.com/Players/2025/bubba-fairman?v=3,SSDM,Defensive Midfield,2,CAN,Cannons,32,3
-000727,CJ Costabile,CJ,Costabile,cj costabile,cj-costabile,https://img.premierlacrosseleague.com/Players/2026/cj-costabile.webp?v=4,LSM,Long Stick Midfield,9,CHA,Chaos,28,3
+000727,CJ Costabile,CJ,Costabile,cj costabile,cj-costabile,https://img.premierlacrosseleague.com/Players/2026/cj-costabile.webp?v=4,LSM,Long Stick Midfield,9,ATL|CHA,Atlas|Chaos,29,4
 003159,CJ Kirst,CJ,Kirst,cj kirst,cj-kirst,https://img.premierlacrosseleague.com/Players/2026/cj-kirst.webp?v=5,A,Attack,15,WAT,Waterdogs,16,2
 003203,CK Giancola,CK,Giancola,ck giancola,ck-giancola,https://img.premierlacrosseleague.com/Players/2026/ck-giancola.webp,M,Midfield,2,ARC,Archers,3,1
 000376,Cade van Raaphorst,Cade,van Raaphorst,cade van raaphorst,cade-van-raaphorst,https://img.premierlacrosseleague.com/Players/2024/cade-van-raaphorst?v=4,D,Defense,77,ATL|CAN,Atlas|Cannons,31,3
@@ -85,6 +86,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 002054,Chris Merle,Chris,Merle,chris merle,chris-merle,https://img.premierlacrosseleague.com/Players/2026/chris-merle.webp,SSDM,Defensive Midfield,23,RED,Redwoods,31,4
 000368,Chris Sabia,Chris,Sabia,chris sabia,chris-sabia,https://img.premierlacrosseleague.com/Players/2024/chris-sabia?v=2,LSM,Long Stick Midfield,16,WAT,Waterdogs,26,3
 000204,Christian Cuccinello,Christian,Cuccinello,christian cuccinello,christian-cuccinello,https://img.premierlacrosseleague.com/Players/2022/christian-cuccinello.png?v=1,A,Attack,30,CAN,Cannons,2,1
+003233,Christian Fournier,Christian,Fournier,christian fournier,christian-fournier,https://img.premierlacrosseleague.com/Players/2026/christian-fournier.webp,,,,CAN,Cannons,2,1
 003180,Christian Mazur,Christian,Mazur,christian mazur,christian-mazur,https://img.premierlacrosseleague.com/Players/2025/christian-mazur.png?v=2,SSDM,Defensive Midfield,85,WHP,Whipsnakes,12,2
 000411,Christian Mazzone,Christian,Mazzone,christian mazzone,christian-mazzone,https://img.premierlacrosseleague.com/Players/2023/christian-mazzone.png?v=1,M,Midfield,26,WAT,Waterdogs,1,1
 001795,Christian Scarpello,Christian,Scarpello,christian scarpello,christian-scarpello,https://img.premierlacrosseleague.com/Players/2026/christian-scarpello.webp?v=1,SSDM,Defensive Midfield,50,CHA|WAT,Chaos|Waterdogs,48,5
@@ -121,6 +123,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 003068,Dylan Gergar,Dylan,Gergar,dylan gergar,dylan-gergar,https://img.premierlacrosseleague.com/Players/2026/dylan-gergar.png,M,Midfield,40,OUT,Outlaws,2,1
 003101,Dylan Hess,Dylan,Hess,dylan hess,dylan-hess,https://img.premierlacrosseleague.com/Players/2026/dylan-hess.webp?v=4,SSDM,Defensive Midfield,8,WAT,Waterdogs,13,2
 001001,Dylan Molloy,Dylan,Molloy,dylan molloy,dylan-molloy,https://img.premierlacrosseleague.com/Players/2026/dylan-molloy.webp,A,Attack,4,ATL|OUT|RED,Atlas|Outlaws|Redwoods,43,5
+003220,Dylan Renner,Dylan,Renner,dylan renner,dylan-renner,https://img.premierlacrosseleague.com/Players/2025/dylan-renner.png?v=2,,,,ARC,Archers,1,1
 003090,Dyson Williams,Dyson,Williams,dyson williams,dyson-williams,https://img.premierlacrosseleague.com/Players/2026/dyson-williams.webp?v=6,M,Midfield,51,ARC,Archers,18,3
 000314,Eddy Glazener,Eddy,Glazener,eddy glazener,eddy-glazener,https://img.premierlacrosseleague.com/Players/2023/eddy-glazener.png?v=1,D,Defense,30,RED,Redwoods,21,2
 000410,Eli Gobrecht,Eli,Gobrecht,eli gobrecht,eli-gobrecht,https://img.premierlacrosseleague.com/Players/2026/eli-gobrecht.webp?v=4,D,Defense,25,ATL|WAT,Atlas|Waterdogs,52,5
@@ -133,9 +136,11 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 003041,Ethan Rall,Ethan,Rall,ethan rall,ethan-rall,https://img.premierlacrosseleague.com/Players/2026/ethan-rall.webp,LSM,Long Stick Midfield,35,CAN,Cannons,44,4
 001835,Ethan Walker,Ethan,Walker,ethan walker,ethan-walker,https://img.premierlacrosseleague.com/Players/2024/ethan-walker?v=2,A,Attack,57,WAT,Waterdogs,35,3
 003270,Evan Plunkett,Evan,Plunkett,evan plunkett,evan-plunkett,https://img.premierlacrosseleague.com/Players/2026/evan-plunkett.webp?v=1,M,Midfield,4,OUT,Outlaws,9,1
+003047,Evan Zinn,Evan,Zinn,evan zinn,evan-zinn,https://img.premierlacrosseleague.com/Players/2023/evan-zinn.png?v=1,,,,CHA,Chaos,1,1
 000417,Finn Sullivan,Finn,Sullivan,finn sullivan,finn-sullivan,https://img.premierlacrosseleague.com/Players/2022/finn-sullivan.png?v=1,D,Defense,36,CAN|RED,Cannons|Redwoods,9,2
 003298,Finn Thomson,Finn,Thomson,finn thomson,finn-thomson,https://img.premierlacrosseleague.com/Players/2026/finn-thomson.webp?v=2,A,Attack,17,RED,Redwoods,4,1
 002047,Frankie Labetti,Frankie,Labetti,frankie labetti,frankie-labetti,https://img.premierlacrosseleague.com/Players/2022/frankie-labetti.png?v=1,FO,Faceoff,12,ARC,Archers,2,1
+003199,Gannon Matthews,Gannon,Matthews,gannon matthews,gannon-matthews,https://img.premierlacrosseleague.com/Players/2026/gannon-matthews.webp,,,,CHA,Chaos,1,1
 003091,Garrett Degnon,Garrett,Degnon,garrett degnon,garrett-degnon,https://img.premierlacrosseleague.com/Players/2026/garrett-degnon.webp,M,Midfield,40,CHA|RED|WHP,Chaos|Redwoods|Whipsnakes,9,3
 000315,Garrett Epple,Garrett,Epple,garrett epple,garrett-epple,https://img.premierlacrosseleague.com/Players/2025/garrett-epple.png?v=3,D,Defense,52,CAN|RED,Cannons|Redwoods,44,4
 003033,Garrett Leadmon,Garrett,Leadmon,garrett leadmon,garrett-leadmon,https://img.premierlacrosseleague.com/Players/2024/garrett-leadmon?v=2,M,Midfield,40,WHP,Whipsnakes,8,2
@@ -162,6 +167,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 003112,Jack DiBenedetto,Jack,DiBenedetto,jack dibenedetto,jack-dibenedetto,https://img.premierlacrosseleague.com/Players/2026/jack-dibenedetto.webp?v=4,D,Defense,31,ARC|WAT,Archers|Waterdogs,4,2
 003183,Jack Gray,Jack,Gray,jack gray,jack-gray,https://img.premierlacrosseleague.com/Players/2026/jack-gray.webp,SSDM,Defensive Midfield,44,OUT,Outlaws,16,2
 002028,Jack Hannah,Jack,Hannah,jack hannah,jack-hannah,https://img.premierlacrosseleague.com/Players/2026/jack-hannah.webp?v=4,M,Midfield,3,WAT,Waterdogs,52,5
+001719,Jack Jasinski,Jack,Jasinski,jack jasinski,jack-jasinski,https://img.premierlacrosseleague.com/Players/2023/jack-jasinski.png?v=1,,,,CHA,Chaos,1,1
 000318,Jack Kelly,Jack,Kelly,jack kelly,jack-kelly,https://img.premierlacrosseleague.com/Players/2024/jack-kelly?v=2,G,Goalie,94,RED,Redwoods,30,3
 001817,Jack Kielty,Jack,Kielty,jack kielty,jack-kielty,https://img.premierlacrosseleague.com/Players/2026/jack-kielty.webp,D,Defense,40,CAN,Cannons,44,4
 003142,Jack Koras,Jack,Koras,jack koras,jack-koras,https://img.premierlacrosseleague.com/Players/2026/jack-koras.png,M,Midfield,15,WHP,Whipsnakes,7,1
@@ -188,6 +194,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 003084,Jake Stevens,Jake,Stevens,jake stevens,jake-stevens,https://img.premierlacrosseleague.com/Players/2026/jake-stevens.webp,M,Midfield,14,ATL,Atlas,26,3
 003167,Jake Taylor,Jake,Taylor,jake taylor,jake-taylor,https://img.premierlacrosseleague.com/Players/2026/jake-taylor.webp,A,Attack,10,OUT|WAT,Outlaws|Waterdogs,13,2
 000427,Jake Withers,Jake,Withers,jake withers,jake-withers,https://img.premierlacrosseleague.com/Players/2022/jake-withers.png?v=1,FO,Faceoff,18,WAT,Waterdogs,9,1
+003066,Jakob Patterson,Jakob,Patterson,jakob patterson,jakob-patterson,https://premierlacrosseleague.com/wp-content/uploads/2024/05/Headshot_generic_nobackground.webp?v=1,,,,CHA,Chaos,1,1
 002055,Jakob Phaup,Jakob,Phaup,jakob phaup,jakob-phaup,https://img.premierlacrosseleague.com/Players/2023/jakob-phaup.png?v=1,FO,Faceoff,37,ATL,Atlas,1,1
 000268,James Barclay,James,Barclay,james barclay,james-barclay,https://img.premierlacrosseleague.com/Players/2022/james-barclay.png?v=1,D,Defense,25,WHP,Whipsnakes,1,1
 003030,James Reilly,James,Reilly,james reilly,james-reilly,https://img.premierlacrosseleague.com/Players/2024/james-reilly?v=2,FO,Faceoff,13,CHA|WAT,Chaos|Waterdogs,4,2
@@ -272,7 +279,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 000218,Matt McMahon,Matt,McMahon,matt mcmahon,matt-mcmahon,https://img.premierlacrosseleague.com/Players/2023/matt-mcmahon.png?v=1,D,Defense,77,ARC,Archers,24,2
 002018,Matt Moore,Matt,Moore,matt moore,matt-moore,https://img.premierlacrosseleague.com/Players/2025/matt-moore.png?v=4,A,Attack,11,ARC,Archers,35,4
 002056,Matt Rahill,Matt,Rahill,matt rahill,matt-rahill,https://img.premierlacrosseleague.com/Players/2023/matt-rahill.png?v=1,D,Defense,7,CAN|WHP,Cannons|Whipsnakes,6,2
-000354,Matt Rambo,Matt,Rambo,matt rambo,matt-rambo,https://img.premierlacrosseleague.com/Players/2026/matt-rambo.webp?v=2,A,Attack,9,ATL|WHP,Atlas|Whipsnakes,44,5
+000354,Matt Rambo,Matt,Rambo,matt rambo,matt-rambo,https://img.premierlacrosseleague.com/Players/2026/matt-rambo.webp?v=2,A,Attack,9,ATL|WHP,Atlas|Whipsnakes,45,5
 000276,Matt Rees,Matt,Rees,matt rees,matt-rees,https://img.premierlacrosseleague.com/Players/2023/matt-rees.png?v=1,D,Defense,44,CAN|CHA,Cannons|Chaos,16,2
 003164,Matt Traynor,Matt,Traynor,matt traynor,matt-traynor,https://img.premierlacrosseleague.com/Players/2026/matt-traynor.webp,M,Midfield,2,ATL,Atlas,23,2
 001707,Matt Whitcher,Matt,Whitcher,matt whitcher,matt-whitcher,https://img.premierlacrosseleague.com/Players/2026/matt-whitcher.webp?v=5,SSDM,Defensive Midfield,33,WAT,Waterdogs,57,5
@@ -354,11 +361,11 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 000416,Ryland Rees,Ryland,Rees,ryland rees,ryland-rees,https://img.premierlacrosseleague.com/Players/2025/ryland-rees.png?v=3,LSM,Long Stick Midfield,17,RED|WAT,Redwoods|Waterdogs,38,4
 003114,Saam Olexo,Saam,Olexo,saam olexo,saam-olexo,https://img.premierlacrosseleague.com/Players/2024/saam-olexo?v=2,LSM,Long Stick Midfield,48,OUT,Outlaws,1,1
 003161,Sam English,Sam,English,sam english,sam-english,https://img.premierlacrosseleague.com/Players/2026/sam-english.webp?v=4,M,Midfield,15,RED,Redwoods,14,2
-003019,Sam Handley,Sam,Handley,sam handley,sam-handley,https://img.premierlacrosseleague.com/Players/2025/sam-handley.png?v=3,M,Midfield,26,OUT|RED,Outlaws|Redwoods,24,3
+003019,Sam Handley,Sam,Handley,sam handley,sam-handley,https://img.premierlacrosseleague.com/Players/2025/sam-handley.png?v=3,M,Midfield,26,OUT|RED,Outlaws|Redwoods,25,3
 003174,Sam King,Sam,King,sam king,sam-king,https://img.premierlacrosseleague.com/Players/2026/sam-king.webp,A,Attack,9,ARC,Archers,22,2
 001414,Scott Hooper,Scott,Hooper,scott hooper,scott-hooper,https://img.premierlacrosseleague.com/Players/2022/scott-hooper.png?v=1,D,Defense,25,CAN,Cannons,1,1
 000223,Scott Ratliff,Scott,Ratliff,scott ratliff,scott-ratliff,https://img.premierlacrosseleague.com/Players/2022/scott-ratliff.png?v=1,D,Defense,32,ARC,Archers,12,1
-003103,Scott Smith,Scott,Smith,scott smith,scott-smith,https://img.premierlacrosseleague.com/Players/2026/scott-smith.webp,D,Defense,18,CHA,Chaos,19,2
+003103,Scott Smith,Scott,Smith,scott smith,scott-smith,https://img.premierlacrosseleague.com/Players/2026/scott-smith.webp,D,Defense,18,CHA|WHP,Chaos|Whipsnakes,20,2
 003264,Sean Byrne,Sean,Byrne,sean byrne,sean-byrne,https://img.premierlacrosseleague.com/Players/2026/sean-byrne.webp?v=1,G,Goalie,99,WAT,Waterdogs,7,1
 003003,Sean Lulley,Sean,Lulley,sean lulley,sean-lulley,https://img.premierlacrosseleague.com/Players/2023/sean-lulley.png?v=1,M,Midfield,23,WHP,Whipsnakes,1,1
 001724,Sean Sconone,Sean,Sconone,sean sconone,sean-sconone,https://img.premierlacrosseleague.com/Players/2024/sean-sconone?v=2,G,Goalie,50,OUT,Outlaws,22,3
@@ -371,8 +378,10 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 003095,Stephen Zupicich,Stephen,Zupicich,stephen zupicich,stephen-zupicich,https://img.premierlacrosseleague.com/Players/2026/stephen-zupicich.webp,LSM,Long Stick Midfield,77,WHP,Whipsnakes,3,1
 000251,Steven DeNapoli,Steven,DeNapoli,steven denapoli,steven-denapoli,https://img.premierlacrosseleague.com/Players/2022/steven-denapoli.png?v=1,SSDM,Defensive Midfield,7,WAT,Waterdogs,7,1
 001812,TD Ierlan,TD,Ierlan,td ierlan,td-ierlan,https://img.premierlacrosseleague.com/Players/2026/td-ierlan.webp,FO,Faceoff,6,RED,Redwoods,57,5
+000407,TJ Comizio,TJ,Comizio,tj comizio,tj-comizio,https://img.premierlacrosseleague.com/Players/2025/tj-comizio.png?v=3,,,,CHA,Chaos,1,1
 003048,TJ Malone,TJ,Malone,tj malone,tj-malone,https://img.premierlacrosseleague.com/Players/2026/tj-malone.webp?v=6,A,Attack,7,WHP,Whipsnakes,36,3
 001823,Tanner Cook,Tanner,Cook,tanner cook,tanner-cook,https://img.premierlacrosseleague.com/Players/2022/tanner-cook.png?v=1,M,Midfield,77,CHA,Chaos,5,1
+003044,Tate Gallagher,Tate,Gallagher,tate gallagher,tate-gallagher,https://img.premierlacrosseleague.com/Players/2026/tate-gallagher.webp,,,,WAT,Waterdogs,1,1
 003257,Teddy Malone,Teddy,Malone,teddy malone,teddy-malone,https://img.premierlacrosseleague.com/Players/2026/teddy-malone.webp?v=2,M,Midfield,26,CHA,Chaos,10,1
 000280,Thomas Kelly,Thomas,Kelly,thomas kelly,thomas-kelly,https://img.premierlacrosseleague.com/Players/2022/thomas-kelly.png?v=1,FO,Faceoff,24,CHA,Chaos,5,1
 003027,Thomas McConvey,Thomas,McConvey,thomas mcconvey,thomas-mcconvey,https://img.premierlacrosseleague.com/Players/2026/thomas-mcconvey.webp,M,Midfield,12,WAT,Waterdogs,23,4
@@ -383,7 +392,7 @@ player_id,full_name,first_name,last_name,player_name_key,player_slug,profile_url
 003215,Tommy Stull,Tommy,Stull,tommy stull,tommy-stull,https://img.premierlacrosseleague.com/Players/2026/tommy-stull.webp,LSM,Long Stick Midfield,40,ARC,Archers,2,1
 001821,Tre Leclaire,Tre,Leclaire,tre leclaire,tre-leclaire,https://img.premierlacrosseleague.com/Players/2026/tre-leclaire.webp?v=3,M,Midfield,44,ARC,Archers,50,5
 000254,Trevor Baptiste,Trevor,Baptiste,trevor baptiste,trevor-baptiste,https://img.premierlacrosseleague.com/Players/2026/trevor-baptiste.webp?v=4,FO,Faceoff,9,ATL,Atlas,51,5
-003020,Troy Hettinger,Troy,Hettinger,troy hettinger,troy-hettinger,https://img.premierlacrosseleague.com/Players/2024/troy-hettinger?v=2,LSM,Long Stick Midfield,9,OUT,Outlaws,5,1
+003020,Troy Hettinger,Troy,Hettinger,troy hettinger,troy-hettinger,https://img.premierlacrosseleague.com/Players/2024/troy-hettinger?v=2,LSM,Long Stick Midfield,9,ARC|OUT,Archers|Outlaws,6,2
 000281,Troy Reh,Troy,Reh,troy reh,troy-reh,https://img.premierlacrosseleague.com/Players/2026/troy-reh.webp?v=4,LSM,Long Stick Midfield,10,CHA,Chaos,59,5
 003261,Truitt Sunderland,Truitt,Sunderland,truitt sunderland,truitt-sunderland,https://img.premierlacrosseleague.com/Players/2026/truitt-sunderland.webp?v=1,M,Midfield,6,WHP,Whipsnakes,6,1
 003031,Tucker Dordevic,Tucker,Dordevic,tucker dordevic,tucker-dordevic,https://img.premierlacrosseleague.com/Players/2024/tucker-dordevic?v=3,M,Midfield,2,WHP,Whipsnakes,15,2

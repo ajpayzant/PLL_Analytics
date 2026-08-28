@@ -23,7 +23,7 @@ postseason_games_with_stats_2024,info,5,,Completed postseason games in this seas
 postseason_games_with_stats_2025,info,5,,Completed postseason games in this season.
 game_manifest_rows,info,208,,Number of completed/stat-available regular-season games parsed.
 team_game_stats_rows,info,416,,Should usually be 2x game_manifest rows.
-player_game_stats_rows,info,7533,,One row per player-game.
+player_game_stats_rows,info,7549,,One row per player-game.
 skipped_games_rows,info,0,,Games skipped due to missing surfaces or invalid stats.
 orphan_stat_rows,info,2,,Stat rows dropped for teams that did not play in the event.
 full_schedule_inventory_rows,info,235,,"Full schedule, including future games."
