@@ -26,7 +26,7 @@ game_manifest_rows,info,208,,Number of completed/stat-available regular-season g
 team_game_stats_rows,info,416,,Should usually be 2x game_manifest rows.
 player_game_stats_rows,info,7549,,One row per player-game.
 skipped_games_rows,info,0,,Games skipped due to missing surfaces or invalid stats.
-orphan_stat_rows,info,2,,Stat rows dropped for teams that did not play in the event.
+orphan_stat_rows,info,0,,Stat rows dropped for teams that did not play in the event.
 full_schedule_inventory_rows,info,235,,"Full schedule, including future games."
 stat_slug_inventory_rows,info,234,,Completed/stat-available games only.
 expected_stat_game_count_2022,pass,40,40.0,Completed regular season expected count.
