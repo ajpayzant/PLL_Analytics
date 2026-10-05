@@ -55,7 +55,7 @@ official_total_possessions_populated_2022,warning,0,,Raw totalPossessions is onl
 official_total_possessions_populated_2023,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2024,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 official_total_possessions_populated_2025,warning,0,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
-official_total_possessions_populated_2026,info,84,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
+official_total_possessions_populated_2026,info,94,,Raw totalPossessions is only reliable in seasons where non-zero values exist.
 context_rows_match_team_game_rows,pass,416,416.0,Opponent context should have one row per team-game.
 season_defense_rows,info,40,,One row per season/team with completed stat games.
 career_defense_rows,info,8,,One row per team across all completed stat games.
