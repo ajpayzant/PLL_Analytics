@@ -1,0 +1,36 @@
+name: Sixes data (Championship Series + GLG, men)
+
+# Runs on pushes to the sixes-data branch or by hand. Publishes the scraped
+# JSON as a tarball on the `sixes-data` release. Does not touch main or data/.
+on:
+  push:
+    branches: [sixes-data]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PLL_BEARER_TOKEN: ${{ secrets.PLL_BEARER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Scrape
+        run: python scripts/sixes/scrape_sixes.py
+      - name: Package
+        run: tar -czf sixes_data.tar.gz sixes_out
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view sixes-data >/dev/null 2>&1 || \
+            gh release create sixes-data --target sixes-data --prerelease \
+              --title "Sixes data (men)" --notes "PLL Championship Series + Global Lacrosse Games raw API JSON, refreshed by .github/workflows/sixes-data.yml on the sixes-data branch."
+          gh release upload sixes-data sixes_data.tar.gz sixes_out/summary.json --clobber
