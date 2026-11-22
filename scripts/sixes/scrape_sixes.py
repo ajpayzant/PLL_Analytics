@@ -89,7 +89,7 @@ def is_mens(e):
 
 events = []
 for y in YEARS:
-    for e in items(get(f"events?year={y}", f"events_{y}")):
+    for e in items(get(f"events?year={y}&includeCS=true", f"events_{y}")):
         e["_year"] = y
         events.append(e)
     get(f"players?year={y}", f"players_{y}")
@@ -108,8 +108,26 @@ for y in (2023, 2024, 2025, 2026):
     patterns += [f"{y}-championship-series-ev-{i}" for i in range(1, 13)]
     patterns += [f"championship-series-{y}-ev-{i}" for i in range(1, 13)]
     patterns += [f"{y}-cs-ev-{i}" for i in range(1, 13)]
-patterns += [f"2026-mens-glg-ev-{i}" for i in range(1, 17)]
+patterns = []  # Championship Series now come from includeCS=true
 probed = {}
+# GLG: not in the events lists. Try list flags and the games/{slug} resource the site uses.
+for y in (2026, 2027):
+    for q in (f"events?year={y}&includeGLG=true", f"events?year={y}&includeAll=true",
+              f"events?year={y}&includeCS=true&league=GLG", f"games?year={y}", f"games?year={y}&includeCS=true"):
+        list_variants[q] = len(items(get(q, "list_" + q.replace("?", "_").replace("&", "_").replace("=", "-"))))
+glg_found = []
+for i in range(1, 17):
+    slug = f"2026-mens-glg-ev-{i}"
+    for res in ("games", "events"):
+        d = get(f"{res}/{slug}", f"{res}_{slug}")
+        if d is not None:
+            glg_found.append(f"{res}/{slug}")
+            for sub in ("players/stats", "teams/stats"):
+                get(f"{res}/{slug}/{sub}", f"{res}_{slug}_{sub.replace('/', '_')}")
+            break
+# games/{slug} for one known CS game, to compare payload shape with events/{slug}
+for sub in ("", "/players/stats", "/teams/stats"):
+    get(f"games/2026-championship-series-ev-1{sub}", f"games_2026-cs-ev-1{sub.replace('/', '_')}")
 for slug in patterns:
     if slug in known:
         continue
@@ -155,7 +173,7 @@ summary = {
     "womens_sixes_skipped": women_skipped,
     "games": games,
     "list_variants": list_variants,
-    "slugs_found": sorted(k for k, v in probed.items() if v),
+    "glg_found": glg_found,
     "status": status,
 }
 (OUT / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
