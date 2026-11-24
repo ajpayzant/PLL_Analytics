@@ -2,16 +2,13 @@ name: GLG live data (men)
 
 # Scrapes completed Global Lacrosse Games results + box scores and publishes them to the public
 # `glg-live` release, which the local GLG projections app syncs from every few minutes.
-# - schedule: every 15 min during the event window (GitHub may delay scheduled runs; use "Run workflow" if needed)
-# - workflow_dispatch: manual run from the Actions tab
-# - push to sixes-data: test runs
+# Manual by design: the app's "Scrape latest GLG stats" button commits a timestamp to glg_trigger.txt on this
+# branch, which starts this run (~1 min). Also runs when the scraper or this workflow changes.
 on:
-  schedule:
-    - cron: '*/15 * 8-14 12 *'
   workflow_dispatch:
   push:
     branches: [sixes-data]
-    paths: ['scripts/sixes/scrape_glg_live.py', '.github/workflows/glg-live.yml']
+    paths: ['glg_trigger.txt', 'scripts/sixes/scrape_glg_live.py', '.github/workflows/glg-live.yml']
 
 permissions:
   contents: write
