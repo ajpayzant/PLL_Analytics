@@ -126,11 +126,19 @@ for slug, e in sorted(found.items(), key=lambda kv: gnum(*kv)):
         teams.append({"game_number": n, "slug": slug, **{k: v for k, v in t.items() if not isinstance(v, (dict, list))}})
 
 
+HEADERS = {
+    "results.csv": ["game_number", "slug", "date", "home", "home_id", "away", "away_id", "home_goals", "away_goals",
+                    "status", "period", "clock"],
+    "player_box.csv": ["game_number", "slug", "team", "official_id", "first_name", "last_name", "position", "goals",
+                       "assists", "shots", "shots_on_goal", "ground_balls", "turnovers", "caused_turnovers", "saves",
+                       "goals_against", "touches", "two_point_goals"],
+    "team_box.csv": ["game_number", "slug", "officialId"],
+}
+
+
 def write(name, rows):
-    if not rows:
-        (OUT / name).write_text("", encoding="utf-8")
-        return
-    cols = list(dict.fromkeys(k for r in rows for k in r))
+    # always write a header (GitHub rejects empty release assets)
+    cols = list(dict.fromkeys([*HEADERS.get(name, []), *(k for r in rows for k in r)]))
     with open(OUT / name, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()

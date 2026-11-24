@@ -5,6 +5,7 @@ name: Sixes data (Championship Series + GLG, men)
 on:
   push:
     branches: [sixes-data]
+    paths-ignore: ['glg_trigger.txt', 'scripts/sixes/scrape_glg_live.py', '.github/workflows/glg-live.yml']
   workflow_dispatch:
 
 permissions:
