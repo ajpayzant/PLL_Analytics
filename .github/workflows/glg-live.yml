@@ -1,0 +1,46 @@
+name: GLG live data (men)
+
+# Scrapes completed Global Lacrosse Games results + box scores and publishes them to the public
+# `glg-live` release, which the local GLG projections app syncs from every few minutes.
+# - schedule: every 15 min during the event window (GitHub may delay scheduled runs; use "Run workflow" if needed)
+# - workflow_dispatch: manual run from the Actions tab
+# - push to sixes-data: test runs
+on:
+  schedule:
+    - cron: '*/15 * 8-14 12 *'
+  workflow_dispatch:
+  push:
+    branches: [sixes-data]
+    paths: ['scripts/sixes/scrape_glg_live.py', '.github/workflows/glg-live.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: glg-live
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PLL_BEARER_TOKEN: ${{ secrets.PLL_BEARER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sixes-data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Scrape GLG
+        run: python scripts/sixes/scrape_glg_live.py
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view glg-live >/dev/null 2>&1 || \
+            gh release create glg-live --target sixes-data --prerelease --title "GLG live data (men)" \
+              --notes "Completed Global Lacrosse Games results and box scores; refreshed by .github/workflows/glg-live.yml."
+          gh release upload glg-live glg_live/results.csv glg_live/player_box.csv glg_live/team_box.csv glg_live/status.json --clobber
