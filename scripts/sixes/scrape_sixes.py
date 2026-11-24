@@ -24,7 +24,7 @@ BASE = "https://api.stats.premierlacrosseleague.com/api/v4"
 OUT = Path("sixes_out")
 RAW = OUT / "raw"
 RAW.mkdir(parents=True, exist_ok=True)
-YEARS = [2021, 2022, 2023, 2024, 2025, 2026, 2027]
+YEARS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027]
 TENV10 = {"regular", "post", "allstar"}
 
 token = os.environ.get("PLL_BEARER_TOKEN", "").strip().strip('"').strip("'")
@@ -167,7 +167,20 @@ for y in (2026, 2027):
         get(f"players?year={y}&seasonSegment={seg}", f"players_{y}_{seg}")
         get(f"standings?year={y}&seasonSegment={seg}", f"standings_{y}_{seg}")
 
+# 10v10 box scores for 2019-2021 (the analytics warehouse starts in 2022): needed as priors for
+# veterans whose best PLL seasons predate 2022 and for 2023 Championship Series players.
+early = []
+for e in events:
+    if e.get("_year") in (2019, 2020, 2021) and e.get("seasonSegment") in ("regular", "post", "champseries"):
+        slug = e["slugname"]
+        ps = get(f"events/{slug}/players/stats", f"ps10_{slug}")
+        ts = get(f"events/{slug}/teams/stats", f"ts10_{slug}")
+        early.append({"slug": slug, "year": e["_year"], "segment": e.get("seasonSegment"),
+                      "players_ok": ps is not None, "teams_ok": ts is not None,
+                      "player_rows": len(items(ps)) if ps is not None else 0})
+
 summary = {
+    "early_10v10": early,
     "segments": dict(sorted(segs.items())),
     "mens_sixes_events": len(sixes),
     "womens_sixes_skipped": women_skipped,
